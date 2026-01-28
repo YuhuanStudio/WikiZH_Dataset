@@ -1,11 +1,18 @@
 ﻿# WikiZH_Dataset
 
+[![License](https://img.shields.io/github/license/YuhuanStudio/WikiZH_Dataset?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square&logo=python)](https://www.python.org/)
+[![GitHub Stars](https://img.shields.io/github/stars/YuhuanStudio/WikiZH_Dataset?style=flat-square&logo=github)](https://github.com/YuhuanStudio/WikiZH_Dataset/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/YuhuanStudio/WikiZH_Dataset?style=flat-square&logo=github)](https://github.com/YuhuanStudio/WikiZH_Dataset/network/members)
+[![GitHub Issues](https://img.shields.io/github/issues/YuhuanStudio/WikiZH_Dataset?style=flat-square&logo=github)](https://github.com/YuhuanStudio/WikiZH_Dataset/issues)
+[![Hugging Face](https://img.shields.io/badge/Datasets-Hugging%20Face-yellow?style=flat-square&logo=huggingface)](https://huggingface.co/yuhuanstudio)
+
 維基百科中文語料處理工具集合，用於生成預訓練與多模態資料集。
 
 本專案用於生成以下 Hugging Face 資料集 🤗：
-- [yuhuanstudio/wikipedia-pretrain-zh-tw](https://huggingface.co/datasets/yuhuanstudio/wikipedia-pretrain-zh-tw) - 台灣正體中文維基百科（3.6M 條目）🇹🇼
-- [yuhuanstudio/wikipedia-pretrain-zh](https://huggingface.co/datasets/yuhuanstudio/wikipedia-pretrain-zh) - 簡體中文維基百科（3.6M 條目）🇨🇳
-- [yuhuanstudio/wikipedia-image-zh-tw](https://huggingface.co/datasets/yuhuanstudio/wikipedia-image-zh-tw) - 台灣正體中文維基百科圖像資料（528K 條目）🖼️
+- [![Hugging Face](https://img.shields.io/badge/wikipedia--pretrain--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-pretrain-zh-tw) 台灣正體中文維基百科（3.6M 條目）🇹🇼
+- [![Hugging Face](https://img.shields.io/badge/wikipedia--pretrain--zh-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-pretrain-zh) 簡體中文維基百科（3.6M 條目）🇨🇳
+- [![Hugging Face](https://img.shields.io/badge/wikipedia--image--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-image-zh-tw) 台灣正體中文維基百科圖像資料（528K 條目）🖼️
 
 ---
 
