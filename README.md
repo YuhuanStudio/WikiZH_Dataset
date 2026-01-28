@@ -166,7 +166,7 @@ dataset_images = load_dataset("yuhuanstudio/wikipedia-image-zh-tw", split="train
 
 ## 授權
 
-請參閱 LICENSE 檔案。
+請參閱 [LICENSE](LICENSE) 檔案。
 
 ## 貢獻
 
@@ -176,6 +176,3 @@ dataset_images = load_dataset("yuhuanstudio/wikipedia-image-zh-tw", split="train
 
 如果你發現安全漏洞，請參閱 [SECURITY.md](SECURITY.md) 了解如何回報。
 
-## 變更日誌
-
-請參閱 [CHANGELOG.md](CHANGELOG.md) 了解版本歷史。
