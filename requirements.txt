@@ -1,0 +1,6 @@
+bz2file
+gensim
+tqdm
+opencc
+requests
+pangu
