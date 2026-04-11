@@ -395,6 +395,7 @@ def main():
     parser.add_argument('--to-pretrain', action='store_true', help='將 Markdown 轉換為 Pretrain JSON')
     parser.add_argument('--extract-images', action='store_true', help='從 XML 提取圖片資訊')
     parser.add_argument('--download-images', action='store_true', help='下載圖片')
+    parser.add_argument('--generate-all', action='store_true', help='一次生成繁體、簡體與圖片資訊（不含下載）')
 
     #（已移除舊版相容參數及 skip-* 選項，介面已簡化）
 
@@ -421,6 +422,37 @@ def main():
 
     try:
         # 執行獨立任務
+        if args.generate_all:
+            # 一次性生成：下載 → 轉 MD → 為 tw/cn 各自生成 Pretrain JSON → 提取圖片資訊（不下載圖片）
+            print("任務：一次生成繁體、簡體與圖片資訊（不含下載）")
+
+            # 下載一次 XML
+            xml_path, latest_date = cli.download_wiki()
+            if xml_path is None:
+                return
+
+            # 轉為 Markdown（僅需執行一次，Markdown 為共享）
+            md_dir = cli.convert_to_md(xml_path, latest_date)
+            if md_dir is None:
+                return
+
+            # 對每個語言分別生成 Pretrain JSON，並提取與下載圖片
+            for lang in ["tw", "cn"]:
+                print(f"\n-- 處理語言: {lang} --")
+                subcli = WikiCLI(lang=lang)
+
+                # 由共享的 md_dir 產生對應語言的 JSON
+                subcli.convert_md_to_json(input_dir=md_dir)
+
+                # 提取圖片資訊（不下載圖片）
+                image_json = os.path.join(subcli.json_dir, 'wiki_images_dataset.jsonl')
+                subcli.extract_images(xml_path=xml_path, output_file=image_json)
+
+            print("\n" + "=" * 60)
+            print("✓ generate-all 任務完成！")
+            print("=" * 60)
+            return
+
         if args.pretrain_dataset:
             cli.run_task('text')
         elif args.image_dataset:

@@ -53,6 +53,11 @@ python -m pip install -r requirements.txt
   python wiki_cli.py --download-images
   ```
 
+-- **一次生成繁體、簡體與圖片資訊（不含下載）**：
+  ```bash
+  python wiki_cli.py --generate-all
+  ```
+
 #### 🔧 單步操作（進階）
 
 - **下載維基百科數據**：
