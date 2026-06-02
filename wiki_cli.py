@@ -19,6 +19,64 @@ import os
 import sys
 import argparse
 import shutil
+import importlib.util
+
+
+# 必要的第三方套件：{import 名稱: pip 安裝名稱}
+# 用於在執行任何耗時任務前，先確認所有依賴都已安裝且可正常匯入
+REQUIRED_PACKAGES = {
+    'bz2file': 'bz2file',
+    'gensim': 'gensim',
+    'tqdm': 'tqdm',
+    'opencc': 'opencc',
+    'requests': 'requests',
+    'pangu': 'pangu',
+}
+
+
+def check_dependencies():
+    """執行前檢查所有必要的 pip 套件是否已安裝且可正常匯入。
+
+    避免在下載／轉換等耗時步驟跑到一半才因缺少套件而失敗。
+    若有缺漏或無法匯入的套件，會印出明確的安裝指令並中止程式。
+    """
+    print("=" * 60)
+    print("檢查必要套件")
+    print("=" * 60)
+
+    missing = []  # 完全沒安裝
+    broken = []   # 有安裝但匯入失敗（例如版本不相容或缺少系統依賴）
+
+    for import_name, pip_name in REQUIRED_PACKAGES.items():
+        if importlib.util.find_spec(import_name) is None:
+            print(f"  ✗ {import_name:<10} (未安裝)")
+            missing.append(pip_name)
+            continue
+
+        # 實際匯入一次，確保套件不僅存在、且能正常載入
+        try:
+            __import__(import_name)
+            print(f"  ✓ {import_name}")
+        except Exception as e:
+            print(f"  ✗ {import_name:<10} (匯入失敗: {e})")
+            broken.append(pip_name)
+
+    if missing or broken:
+        print("\n" + "=" * 60)
+        print("✗ 缺少必要套件，無法繼續執行")
+        print("=" * 60)
+        to_install = missing + broken
+        if missing:
+            print(f"未安裝: {', '.join(missing)}")
+        if broken:
+            print(f"匯入失敗: {', '.join(broken)}")
+        print("\n請先安裝所有依賴後再執行：")
+        print(f"    pip install {' '.join(to_install)}")
+        print("或直接安裝 requirements.txt：")
+        print("    pip install -r requirements.txt")
+        sys.exit(1)
+
+    print("\n✓ 所有必要套件皆已安裝且可正常使用\n")
 
 
 class WikiCLI:
@@ -411,7 +469,20 @@ def main():
     parser.add_argument('--image-dir', type=str, help='指定圖片輸出目錄')
     parser.add_argument('--max-images', type=int, help='最大圖片數量（用於 --extract-images）')
 
+    parser.add_argument('--skip-check', action='store_true', help='跳過執行前的套件檢查')
+
+    # 確保輸出使用 UTF-8，避免在 Windows GBK 主控台輸出 ✓／✗ 等字元時崩潰
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8')
+        except (AttributeError, ValueError):
+            pass
+
     args = parser.parse_args()
+
+    # 執行前先確認所有必要套件皆已安裝且可用，避免跑到一半才失敗
+    if not args.skip_check:
+        check_dependencies()
 
     cli = WikiCLI(lang=args.lang)
 
