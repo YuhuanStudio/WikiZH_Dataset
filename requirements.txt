@@ -1,6 +1,17 @@
-bz2file
+# 解析維基百科 XML dump
 gensim
+
+# 資料集輸出（Parquet）
+pyarrow
+
+# 進度顯示
 tqdm
-opencc
-requests
-pangu
+
+# 上傳 Hugging Face
+huggingface_hub
+
+# 注意：
+# - 繁簡轉換改用維基百科自己的 ZhConversion 表（data/zhconv.json），不再依賴 opencc
+#   理由：OpenCC 的 s2twp 為軟體在地化設計，在百科語境誤轉率高
+#   （大力支持→大力支援、運動會項目→運動會專案、重整程序→重整程式）
+# - pangu 已移除：排版空格是不可逆的有損轉換，語料應保真

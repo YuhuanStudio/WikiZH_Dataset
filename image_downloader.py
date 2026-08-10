@@ -10,10 +10,11 @@ def download_images_from_jsonl(jsonl_path, output_dir):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     failed_files = []
-    tasks = []
-    with open(jsonl_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    pbar = tqdm(total=len(lines), desc=f"下載 {os.path.basename(jsonl_path)}", unit="img", dynamic_ncols=True)
+    # 逐行串流讀取，不要 readlines()：圖片 JSONL 是 300 MB、93 萬列，
+    # 一次讀進來光是 list of str 就吃掉數 GB。
+    total_lines = sum(1 for _ in open(jsonl_path, 'r', encoding='utf-8'))
+    pbar = tqdm(total=total_lines, desc=f"下載 {os.path.basename(jsonl_path)}",
+                unit="img", dynamic_ncols=True)
 
     import random
     # 產生大量 user agent
@@ -97,33 +98,54 @@ def download_images_from_jsonl(jsonl_path, output_dir):
                 time.sleep(0.5)
         return file_name, 'fail', last_error
 
-    with ThreadPoolExecutor(max_workers=15) as executor:  # 降低併發數，減少被封鎖
-        future_to_data = {}
-        for line in lines:
-            try:
-                data = json.loads(line)
-                file_name = data.get('file_name')
-                out_path = os.path.join(output_dir, file_name) if file_name else None
-                if out_path and os.path.exists(out_path):
-                    # 已存在，直接更新進度條
-                    pbar.set_postfix({"狀態": "已存在", "檔案": file_name, "失敗累計": len(failed_files)})
+    def report(file_name, status):
+        label = {'fail': '下載失敗', 'success': '下載成功',
+                 'exists': '已存在', 'copied': '已複製(舊版)'}.get(status, status)
+        pbar.set_postfix({"狀態": label, "檔案": file_name,
+                          "失敗累計": len(failed_files)})
+        pbar.update(1)
+
+    # 同一張圖會出現在多篇條目（資料集刻意一次使用一列），檔名因此重複。
+    # 不去重的話多個執行緒會同時寫同一個檔案，內容互相蓋掉。
+    seen = set()
+    # 一次只掛 batch 個工作，不要把 93 萬個 future 全塞進記憶體
+    batch = 2000
+
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        pending = {}
+
+        def drain(limit):
+            while len(pending) >= limit and pending:
+                done = next(as_completed(list(pending)))
+                file_name, status, _err = done.result()
+                pending.pop(done, None)
+                if status == 'fail':
+                    failed_files.append(file_name)
+                report(file_name, status)
+
+        with open(jsonl_path, 'r', encoding='utf-8') as fh:
+            for line in fh:
+                try:
+                    data = json.loads(line)
+                except Exception:
                     pbar.update(1)
-                else:
-                    future = executor.submit(download_one, data)
-                    future_to_data[future] = data
-            except Exception:
-                pbar.update(1)
-        for future in as_completed(future_to_data):
-            file_name, status, err = future.result()
-            if status == 'fail':
-                failed_files.append(file_name)
-                pbar.set_postfix({"狀態": "下載失敗", "檔案": file_name, "失敗累計": len(failed_files)})
-            elif status == 'success':
-                pbar.set_postfix({"狀態": "下載成功", "檔案": file_name, "失敗累計": len(failed_files)})
-            elif status == 'exists':
-                pbar.set_postfix({"狀態": "已存在", "檔案": file_name, "失敗累計": len(failed_files)})
-            elif status == 'copied':
-                pbar.set_postfix({"狀態": "已複製(舊版)", "檔案": file_name, "失敗累計": len(failed_files)})
-            pbar.update(1)
+                    continue
+                file_name = data.get('file_name')
+                if not file_name:
+                    pbar.update(1)
+                    continue
+                if file_name in seen:
+                    report(file_name, 'exists')       # 同一張圖，前面已排程
+                    continue
+                seen.add(file_name)
+                out_path = os.path.join(output_dir, file_name)
+                if os.path.exists(out_path):
+                    report(file_name, 'exists')
+                    continue
+                pending[executor.submit(download_one, data)] = file_name
+                drain(batch)
+
+        drain(1)
+
     return failed_files
 

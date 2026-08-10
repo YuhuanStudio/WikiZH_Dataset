@@ -206,8 +206,27 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-markdown/
+# 產生出來的大型資料：中間層、資料集、圖片
+parsed/
 output/
 images/
+# 早期版本的產出目錄（命名已不同，現行流程不再使用）
+markdown/
 zhtw/
 zhcn/
+wiki_zh_dataset/
+
+# 抽樣測試用的暫存輸出
+.t10k/
+.t100k/
+
+# 本機工具設定
+.claude/
+# QA／稽核用的一次性分析腳本（不進版控）
+qa/
+# 一次性的工作區：外部工具的日誌、抽樣、暫存腳本
+scratchpad/
+*.log
+
+# WSL 原生執行環境
+.venv/
