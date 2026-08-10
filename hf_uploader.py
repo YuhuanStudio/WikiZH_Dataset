@@ -712,12 +712,42 @@ class HFUploader:
 
     # ---------- repo 內容查詢 ----------
 
+    def ensure_repo(self, repo_id):
+        """repo 不存在就建一個，回傳「這是新建的嗎」
+
+        新增一種資料集形態時（這次的 omni）repo 還不存在，`list_repo_tree`
+        會拋 404 並中止整個上傳——但「還沒有這個 repo」不是錯誤，是第一次
+        上傳的正常狀態。新 repo 沒有舊版本可歸檔，樹當成空的。
+        """
+        from huggingface_hub.errors import RepositoryNotFoundError
+        try:
+            if self.api.repo_exists(repo_id, repo_type='dataset'):
+                return False
+        except RepositoryNotFoundError:
+            pass
+        if self.dry_run:
+            print(f"  （dry-run）repo 不存在，實際執行時會建立 {repo_id}")
+        else:
+            self.api.create_repo(repo_id, repo_type='dataset', exist_ok=True)
+            print(f"  建立新 repo: {repo_id}")
+        self._tree_cache[repo_id] = []
+        return True
+
     def _tree(self, repo_id, refresh=False):
-        """列出 repo root 的內容（含檔案大小），結果會快取"""
+        """列出 repo root 的內容（含檔案大小），結果會快取
+
+        repo 不存在時回空清單而不是拋例外：呼叫端問的是「上面有什麼」，
+        「什麼都沒有」是這個問題的合法答案。
+        """
+        from huggingface_hub.errors import RepositoryNotFoundError
         if refresh or repo_id not in self._tree_cache:
-            self._tree_cache[repo_id] = list(
-                self.api.list_repo_tree(repo_id, repo_type='dataset', recursive=False)
-            )
+            try:
+                self._tree_cache[repo_id] = list(
+                    self.api.list_repo_tree(repo_id, repo_type='dataset',
+                                            recursive=False)
+                )
+            except RepositoryNotFoundError:
+                self._tree_cache[repo_id] = []
         return self._tree_cache[repo_id]
 
     def _root_data_files(self, repo_id, pattern):
@@ -742,14 +772,24 @@ class HFUploader:
     def _read_repo_file(self, repo_id, path):
         """讀取 repo 上的文字檔，不存在時回傳 None"""
         from huggingface_hub import hf_hub_download
-        from huggingface_hub.errors import EntryNotFoundError
+        from huggingface_hub.errors import (EntryNotFoundError,
+                                            RepositoryNotFoundError)
+
+        # repo 本身還不存在（第一次上傳這種形態）就別去下載了：
+        # `force_download=True` 會把底下的 404 包成「Force download failed」，
+        # 型別對不上，於是正常狀態被印成錯誤。
+        try:
+            if not self.api.repo_exists(repo_id, repo_type='dataset'):
+                return None
+        except RepositoryNotFoundError:
+            return None
 
         try:
             local = hf_hub_download(
                 repo_id, path, repo_type='dataset', token=self.token,
                 force_download=True,  # 避免讀到過期的本地快取
             )
-        except EntryNotFoundError:
+        except (EntryNotFoundError, RepositoryNotFoundError):
             return None
         except Exception as e:
             print(f"  ⚠ 讀取 {path} 失敗: {e}")
@@ -1040,7 +1080,9 @@ class HFUploader:
         repo_id = PRETRAIN_REPOS[lang]
         print(f"\n--- 上傳 Pretrain ({lang}) → {repo_id} ---")
 
-        if archive:
+        is_new = self.ensure_repo(repo_id)
+
+        if archive and not is_new:
             archive_version = archive_as or self.detect_archive_version(repo_id, version, PRETRAIN_FILE_RE)
             if archive_version >= version:
                 print(f"  ⚠ 推算出的歸檔月份 {archive_version} 不早於新版本 {version}，略過歸檔")
@@ -1059,7 +1101,9 @@ class HFUploader:
         repo_id = OMNI_REPOS[lang]
         print(f"\n--- 上傳 omni ({lang}) → {repo_id} ---")
 
-        if archive:
+        is_new = self.ensure_repo(repo_id)
+
+        if archive and not is_new:
             archive_version = archive_as or self.detect_archive_version(
                 repo_id, version, PRETRAIN_FILE_RE)
             if archive_version >= version:
@@ -1075,7 +1119,9 @@ class HFUploader:
         repo_id = IMAGE_REPO
         print(f"\n--- 上傳圖片資料集 → {repo_id} ---")
 
-        if archive:
+        is_new = self.ensure_repo(repo_id)
+
+        if archive and not is_new:
             archive_version = archive_as or self.detect_archive_version(repo_id, version, IMAGE_FILE_RE)
             if archive_version >= version:
                 print(f"  ⚠ 推算出的歸檔月份 {archive_version} 不早於新版本 {version}，略過歸檔")
