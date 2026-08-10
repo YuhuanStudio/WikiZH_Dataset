@@ -59,6 +59,34 @@ _NO_CONVERT_RE = re.compile(
     r'|\$[^$\n]{1,2000}\$')              # 行內公式
 
 
+_CJK_RE = re.compile(r'[一-鿿]')
+# LaTeX 的痕跡：`\frac`、`\text`、上下標的 `^{`／`_{`、換行的 `\\`
+_LATEX_HINT_RE = re.compile(r'\\[A-Za-z]+|[\^_]\{|\\\\')
+
+
+def _is_verbatim(span):
+    """這一段真的是逐字區塊，還是 `$` 配錯對圈到的散文
+
+    `$…$` 是行內公式的寫法，但 `$` 在中文條目裡更常是**貨幣符號**或
+    `$MFT`、`$Volume` 這種 NTFS 檔名。兩個這樣的 `$` 之間夾著的整段散文
+    會被當成公式，於是**完全不做繁簡轉換**——`反恐精英：全球攻勢` 裡
+    「$250,000」到「$1,000,000」之間那段就這樣留著「举办了赛事系列」，
+    `NTFS` 整篇更是大半沒轉。
+
+    判準量出來的：全庫 250,956 個 `$…$` 區段裡 7,359 個含中文，其中只有
+    126 個（1.7%）帶 LaTeX 記號——那些是 `\text{光照}` 這類化學反應式，
+    是真公式；其餘 7,233 個全是貨幣與檔名。所以：**含中文又沒有 LaTeX
+    記號的，就不是公式**。
+
+    圍欄程式碼與行內程式碼有明確的起訖標記，不受這個問題影響，一律逐字。
+    """
+    if not span.startswith('$') or span.startswith('$$'):
+        return True
+    if not _CJK_RE.search(span):
+        return True
+    return bool(_LATEX_HINT_RE.search(span))
+
+
 def convert_script(text, lang):
     """
     繁簡轉換，用維基百科自己的轉換表（見 zhconv.py）。
@@ -84,15 +112,25 @@ def convert_script(text, lang):
     # 先用 C 層的 str 搜尋可避免每篇都讓複雜正則掃完全文。
     if '`' not in text and '$' not in text:
         return _convert_prose(text, lang)
-    if _NO_CONVERT_RE.search(text):
-        out, last = [], 0
-        for m in _NO_CONVERT_RE.finditer(text):
-            out.append(_convert_prose(text[last:m.start()], lang))
+    if not _NO_CONVERT_RE.search(text):
+        return _convert_prose(text, lang)
+
+    out, pos = [], 0
+    while True:
+        m = _NO_CONVERT_RE.search(text, pos)
+        if not m:
+            break
+        if _is_verbatim(m.group(0)):
+            out.append(_convert_prose(text[pos:m.start()], lang))
             out.append(m.group(0))
-            last = m.end()
-        out.append(_convert_prose(text[last:], lang))
-        return ''.join(out)
-    return _convert_prose(text, lang)
+            pos = m.end()
+        else:
+            # 這個 `$…$` 不是公式。只跳過開頭那一個 `$`，從它之後重新找——
+            # 整段跳過的話，貨幣的 `$` 會把後面真正的公式一起吃掉。
+            out.append(_convert_prose(text[pos:m.start() + 1], lang))
+            pos = m.start() + 1
+    out.append(_convert_prose(text[pos:], lang))
+    return ''.join(out)
 
 
 def _convert_prose(text, lang):

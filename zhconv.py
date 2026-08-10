@@ -104,6 +104,45 @@ def _load():
         return json.load(f)
 
 
+def _target_only_chars(base):
+    """`base` 這張表眼中「只存在於來源那一側」的字
+
+    判準取自表自己：這個字有單字轉換規則，而且從不出現在任何規則的**結果**裡。
+    `马` 符合（zh2Hant 有 `马→馬`，而 `马` 不曾是任何規則的結果），`划`／`么`／
+    `谷` 不符合——它們是合法的繁體字，只是在某些詞裡會被詞組規則改寫
+    （`谷物→穀物`），拿單字規則去套會把「星露谷物語」弄成「星露穀物語」、
+    把「划著獨木舟」弄成「劃著獨木舟」。
+    """
+    produced = set()
+    for v in base.values():
+        produced.update(v)
+    single = {k: v for k, v in base.items() if len(k) == 1 and len(v) == 1}
+    return {c: t for c, t in single.items() if c not in produced}
+
+
+def _normalize_regional(base, regional):
+    """把地區用詞表裡「值仍寫成另一側字體」的條目補正
+
+    地區用詞表的**鍵**是哪一種字體本來就不一致，那是設計如此（見模組說明）；
+    但**值**應該一律是目標字體。維基那張表有少數條目不是：zh2TW 的
+    `马哈迪·莫哈末 → 马哈地·穆罕默德` 值裡留著簡體的 `马`，zh2CN 的
+    `著緑 → 着緑` 值裡留著繁體的 `緑`。合併成單表單趟轉換時，值是直接輸出的，
+    於是那個字永遠轉不掉——實測繁體資料集裡 1,979 個簡體 `马` 全出自這一條。
+
+    只補正「另一側專用字」，不整條重轉：整條重轉會連詞組規則一起套上去，
+    反而弄壞本來正確的條目（tw 側 7 個候選裡有 4 個會被弄壞）。
+    """
+    only = _target_only_chars(base)
+    if not only:
+        return regional
+    fixed = {}
+    for src, dst in regional.items():
+        if any(c in only for c in dst):
+            dst = ''.join(only.get(c, c) for c in dst)
+        fixed[src] = dst
+    return fixed
+
+
 def get_converter(name):
     """取得轉換器（每個進程只建一次）"""
     conv = _CACHE.get(name)
@@ -118,7 +157,10 @@ def get_converter(name):
         t = _load()
         # 舊寫法的 dict literal 在只需要 tw 時仍會同時建三個
         # converter。這裡只建真正要放進 cache 的那一個。
-        conv = _Converter([t[key] for key in table_names[name]])
+        keys = table_names[name]
+        tables = [t[keys[0]]]
+        tables += [_normalize_regional(t[keys[0]], t[k]) for k in keys[1:]]
+        conv = _Converter(tables)
         _CACHE[name] = conv
     return conv
 

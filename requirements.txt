@@ -10,6 +10,9 @@ tqdm
 # 上傳 Hugging Face
 huggingface_hub
 
+# 下載圖片（只有 --download-images 用得到）
+requests
+
 # 注意：
 # - 繁簡轉換改用維基百科自己的 ZhConversion 表（data/zhconv.json），不再依賴 opencc
 #   理由：OpenCC 的 s2twp 為軟體在地化設計，在百科語境誤轉率高

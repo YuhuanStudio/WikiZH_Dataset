@@ -29,15 +29,31 @@ import importlib.util
 REQUIRED_PACKAGES = {
     'gensim': 'gensim',
     'tqdm': 'tqdm',
-    'requests': 'requests',
-    'pangu': 'pangu',
+    'pyarrow': 'pyarrow',
     'huggingface_hub': 'huggingface_hub',
+}
+
+# 只有特定任務才需要的套件。列進上面那張表的話，不做該任務的人也會被擋下來——
+# `pangu` 早就移除了（排版空格是不可逆的有損轉換），`requests` 只有「下載圖片」
+# 用得到，卻讓「上傳資料集」也無法執行。
+OPTIONAL_PACKAGES = {
+    'download_images': {'requests': 'requests'},
 }
 
 
 # 本地資料保留幾個月份（當月 + 上個月）
 # 舊版本在 Hugging Face 上有月份資料夾存檔，本地不需要一直留著佔空間
 KEEP_MONTHS = 2
+
+
+def check_optional(task):
+    """檢查某個任務專屬的套件；缺了才報，不影響其他任務"""
+    need = OPTIONAL_PACKAGES.get(task, {})
+    missing = [pip for mod, pip in need.items() if importlib.util.find_spec(mod) is None]
+    if missing:
+        print(f"✗ 「{task}」需要以下套件：{', '.join(missing)}")
+        print(f"    pip install {' '.join(missing)}")
+        sys.exit(1)
 
 
 def check_dependencies():
@@ -507,6 +523,7 @@ class WikiCLI:
         print(f"輸出目錄: {output_dir}")
 
         try:
+            check_optional('download_images')
             from image_downloader import download_images_from_jsonl
 
             download_images_from_jsonl(jsonl_path, output_dir)
@@ -662,6 +679,8 @@ Hugging Face 上傳：
     parser.add_argument('--hf-token', type=str, help='HF token（預設讀 HF_TOKEN 環境變數或本地登入快取）')
     parser.add_argument('--dry-run', action='store_true', help='上傳只做檢查與規劃，不實際寫入 HF')
     parser.add_argument('--no-archive', action='store_true', help='上傳時不要把舊版本歸檔到月份資料夾')
+    parser.add_argument('--refresh-cards', action='store_true',
+                        help='把 HF 的 dataset card 整張換成程式產生的版本')
     parser.add_argument('--archive-as', type=str, help='手動指定歸檔月份（YYMM），預設自動判斷')
     parser.add_argument('--skip-checks', action='store_true', help='略過上傳前的資料檢查')
     parser.add_argument('--force-upload', action='store_true', help='上傳前檢查未通過時仍強制上傳')
@@ -688,6 +707,7 @@ Hugging Face 上傳：
     upload_kwargs = dict(
         token=args.hf_token,
         dry_run=args.dry_run,
+        refresh_cards=args.refresh_cards,
         archive=not args.no_archive,
         archive_as=args.archive_as,
         skip_checks=args.skip_checks,

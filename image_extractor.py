@@ -259,6 +259,18 @@ def _page_url(raw_title):
         lambda m: f'%{ord(m.group(0)):02X}', slug)
 
 
+def _install_word_guard():
+    """裝上詞邊界詞表；圖說走的是與正文同一條轉換，護欄也該一樣"""
+    import title_words
+    import tw_vocab
+    words = title_words.load()
+    if words:
+        tw_vocab.load_guard(words)
+        print(f'詞邊界詞表 {len(words):,} 個詞')
+    else:
+        print('⚠ 找不到 parsed/*/title_words.json，台灣詞彙白名單沒有詞邊界護欄')
+
+
 def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
     """
     走訪整份 dump，輸出圖片與圖說的 JSONL。
@@ -272,6 +284,7 @@ def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
     Returns:
         int: 寫出的記錄數
     """
+    _install_word_guard()
     opener = bz2.open if xml_path.endswith('.bz2') else open
     base, ext = os.path.splitext(output_json)
     if os.path.dirname(output_json):
@@ -298,6 +311,13 @@ def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
                 bodies.extend(iter_gallery_bodies(text))
                 sections = section_positions(text)
 
+                # 同一篇條目裡，同一張圖配同一段說明可能出現很多次——路牌
+                # 圖示逐條重出、模板在多處展開。那些重複的列一個字都沒多帶，
+                # 只會讓裝飾性小圖示在訓練時被過度加權。**只去掉整列完全相同
+                # 的**：說明或章節有一點不同就留著，那是同一張圖的另一個語境
+                # （`寒山寺` 在「寒山寺」節與「佛教」節各有一句不同的說明）。
+                # 範圍限本頁——同一張圖出現在別的條目是另一回事。
+                seen = set()
                 for pos, body in bodies:
                     # 單一圖片解析失敗不該中斷整批
                     try:
@@ -312,6 +332,13 @@ def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
                     if not caption and not alt:
                         continue
 
+                    section = clean_caption(
+                        section_at(sections, pos), page_title, lang)
+                    key = (file_name, caption, alt, section)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
                     line = json.dumps({
                         'url': _file_url(file_name),
                         'file_name': file_name,
@@ -324,8 +351,7 @@ def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
                         # 的是哪一段，只知道屬於哪一篇不夠——章節名跟正文
                         # 資料集的 `##` 標題用同一套清理，可以直接對起來。
                         # 前言位置的圖片為空字串。
-                        'section': clean_caption(
-                            section_at(sections, pos), page_title, lang),
+                        'section': section,
                     }, ensure_ascii=False) + '\n'
                     out.write(line)
                     bytes_written += len(line.encode('utf-8'))
@@ -368,6 +394,8 @@ def extract_wiki_images_variants(xml_path, output_jsons, max_images=None):
     if set(output_jsons) != {'tw', 'cn'}:
         raise ValueError("output_jsons 必須同時提供 'tw' 與 'cn'")
 
+    _install_word_guard()
+
     opener = bz2.open if xml_path.endswith('.bz2') else open
     states = {}
     for lang in ('tw', 'cn'):
@@ -401,6 +429,9 @@ def extract_wiki_images_variants(xml_path, output_jsons, max_images=None):
                 }
                 page_url = _page_url(raw_title)
 
+                # 整列完全相同的重複只留一次（理由同 extract_wiki_images）。
+                # 繁簡各自一份：說明文字不同，不能共用同一個集合。
+                seen = {'tw': set(), 'cn': set()}
                 for pos, body in bodies:
                     raw_section = section_at(sections, pos)
                     for lang in ('tw', 'cn'):
@@ -420,6 +451,12 @@ def extract_wiki_images_variants(xml_path, output_jsons, max_images=None):
                         if not caption and not alt:
                             continue
 
+                        section = clean_caption(raw_section, page_title, lang)
+                        key = (file_name, caption, alt, section)
+                        if key in seen[lang]:
+                            continue
+                        seen[lang].add(key)
+
                         line = json.dumps({
                             'url': _file_url(file_name),
                             'file_name': file_name,
@@ -428,8 +465,7 @@ def extract_wiki_images_variants(xml_path, output_jsons, max_images=None):
                             'page': page_title,
                             'page_id': str(page_id),
                             'page_url': page_url,
-                            'section': clean_caption(
-                                raw_section, page_title, lang),
+                            'section': section,
                         }, ensure_ascii=False) + '\n'
                         state['out'].write(line)
                         state['bytes'] += len(line.encode('utf-8'))

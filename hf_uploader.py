@@ -74,7 +74,7 @@ _CARD_CHANGES = """
 | 繁簡轉換 | OpenCC `s2twp` | **維基官方轉換表** + 台灣慣用詞白名單（OpenCC 在百科語境誤轉率高：大力支持→大力支援、重整程序→重整程式）|
 | 排版空格 | 有（pangu）| **移除**——不可逆的有損轉換，語料應保真 |
 | 長度過濾 | 有 | **沒有**——一句話的條目也是完整知識 |
-| 圖片 | 只認一種前綴、不看 `<gallery>`，漏約 1/5 | 括號配對抓全，**新增 `section` 欄位**定位到章節 |
+| 圖片 | 54.8 萬列（按檔名全域去重）、圖說有 10.87% 夾著未清的 wiki 標記、繁體檔有 43.8% 的條目名沒轉成繁體 | **91.1 萬列**（保留每張圖的每個使用語境）、圖說殘留標記 0.00%、**新增 `page_id`／`page_url`／`alt`／`section`** |
 | 圖文交錯 | 無 | **新增** omni 版（`<image>` 佔位符 + `images` 陣列）|
 
 ### 內容缺失率（全量，非抽樣）
@@ -96,7 +96,7 @@ _CARD_CHANGES = """
 連純散文，`2607` 也只留住 59%——四成的正文句子不見了。
 
 `2608` 的 56.3% 不是滿分，但剩下的有明確歸屬：資訊框欄位值的探針含大量版面設定
-（圖片檔名、尺寸、色碼），表格探針含樣式屬性（以人工挑過的探針量是 91.3% OK），
+（圖片檔名、尺寸、色碼），表格探針含樣式屬性（以人工挑過的探針量是 92.3% OK），
 段落則是參考資料／外部連結等章節依設計整節不收。公式與程式碼的探針最乾淨，
 99% 可視為保留率的上界參考。
 
@@ -161,7 +161,7 @@ _CARD_COMMON = """
 
 | 檢查 | 結果 |
 |---|---|
-| 程式碼區塊與原始碼逐字相符 | 94.2% |
+| 程式碼區塊與原始碼逐字相符 | 94.3% |
 | 公式與原始碼逐字相符 | 99.3% |
 | 繁簡兩版結構對等 | 20 萬篇中 2 篇不對等 |
 | 空白／私有區字元／表格空儲存格等八類硬性缺陷 | 0 |
@@ -280,6 +280,10 @@ def _image_card(version, dump_date):
 **一次使用一列**：同一張圖出現在不同條目、配著不同圖說，正是圖文配對最有價值
 的部分，因此不做全域去重。要一圖一列的人可自行以 `url` 去重。沒有圖說也沒有
 `alt` 的純裝飾圖片會略過，不拿檔名充當描述。
+
+唯一會去掉的是**同一條目裡整列完全相同**的重複（圖、圖說、`alt`、章節都一樣）：
+路牌圖示之類的小圖會在同一節裡逐條重出，那些列一個字都沒多帶，只會讓裝飾性
+圖示被過度加權。圖說或章節有任何不同就保留——那是同一張圖的另一個語境。
 
 > ⚠️ 圖片授權各不相同（CC BY-SA、公有領域，也有合理使用的非自由圖片如商標、
 > 專輯封面）。授權資訊不在 `pages-articles` dump 裡，本資料集**不含授權欄位**，
@@ -484,11 +488,44 @@ def _conversion_drift(texts, mode):
 PRETRAIN_COLUMNS = ('id', 'title', 'url', 'text')
 
 
-def check_pretrain_files(files, lang, prev_total_size=None):
-    """檢查文字資料集的 Parquet 輸出"""
+def _size_drift_note(ratio, what):
+    """體積相對上一版的變化：如實報告，不當作擋人的理由
+
+    只憑「跟上一版差幾 %」分不出「資料變多」與「資料壞了」——這一版圖片多了
+    71%（撈到更多圖、而且開始帶圖說），純文字則因為改用 Parquet 壓縮而小了
+    42%，兩個都是對的。拿一個判不出對錯的訊號去擋上傳，結果只會是每次都加
+    `--force-upload`，把真正判得出來的檢查（分片連續、欄位非空、schema、截斷、
+    繁簡方向）一起關掉。所以體積只出警告，讓人看一眼；擋，留給判得準的項目。
+    """
+    if ratio > 0:
+        cause = '撈到更多資料，或是同一批資料被重複寫出'
+    else:
+        cause = '壓縮方式改變，或是資料真的少了'
+    return (f'{what}與上一版差異 {ratio:+.1%}，超過 ±{SIZE_TOLERANCE:.0%}'
+            f'（可能是{cause}，請確認筆數與抽樣內容）')
+
+
+def _check_lang(lang):
+    """語言碼只有兩個值。傳錯就當場停，不要讓它默默走進另一邊的分支"""
+    if lang not in ('tw', 'cn'):
+        raise ValueError(f"lang 只能是 'tw' 或 'cn'，收到 {lang!r}")
+
+
+def check_pretrain_files(files, lang, prev_total_size=None, columns=None, label=None):
+    """檢查文字資料集的 Parquet 輸出
+
+    `columns` 讓 omni 版沿用同一套檢查：它多一個 `images` 欄，schema 不同但
+    其餘（分片連續、欄位非空、url 合法、平均長度、繁簡一致）判準完全一樣。
+
+    `lang` 只能是 `tw`／`cn`，因為它決定繁簡一致性往哪個方向轉；顯示用的名稱
+    走 `label`。曾經把 `'tw omni'` 當 lang 傳進來，`lang == 'tw'` 不成立就靜默
+    落到簡體分支，於是繁體資料被判成「23.6% 不符合簡體」。
+    """
+    _check_lang(lang)
+    columns = columns or PRETRAIN_COLUMNS
     import pyarrow.parquet as pq
 
-    result = CheckResult(f"pretrain-{lang}（{len(files)} 個分片）")
+    result = CheckResult(f"pretrain-{label or lang}（{len(files)} 個分片）")
 
     if not files:
         result.error('找不到任何 train-*.parquet 檔案')
@@ -524,8 +561,8 @@ def check_pretrain_files(files, lang, prev_total_size=None):
             continue
 
         cols = tuple(pf.schema_arrow.names)
-        if cols != PRETRAIN_COLUMNS:
-            result.error(f'{name} 欄位不符，預期 {PRETRAIN_COLUMNS}，實際 {cols}')
+        if cols != columns:
+            result.error(f'{name} 欄位不符，預期 {columns}，實際 {cols}')
             continue
 
         rows = pf.metadata.num_rows
@@ -564,7 +601,9 @@ def check_pretrain_files(files, lang, prev_total_size=None):
             result.error(f'每千字有 {per_k:.1f} 個數字後空格，pangu 可能沒有關掉')
 
         drift = _conversion_drift([r['text'] for r in samples[:200]], 's2t' if lang == 'tw' else 't2s')
-        if drift > 0.05:
+        if drift is None:
+            result.info('繁簡一致性: 樣本無可判別字元，略過')
+        elif drift > 0.05:
             expect = '繁體' if lang == 'tw' else '簡體'
             result.error(f'繁簡一致性檢查失敗：{drift:.1%} 的字元不符合{expect}，lang 參數可能傳錯')
         else:
@@ -573,15 +612,15 @@ def check_pretrain_files(files, lang, prev_total_size=None):
     if prev_total_size:
         ratio = total_size / prev_total_size - 1
         result.info(f"與上一版比較: {ratio:+.1%}（上一版 {_human_size(prev_total_size)}）")
-        # 換成 Parquet 後檔案本來就會小很多，體積比較只作為提醒
         if abs(ratio) > SIZE_TOLERANCE:
-            result.warn(f'總大小與上一版差異 {ratio:+.1%}（格式從 JSON 改為 Parquet 時屬正常）')
+            result.warn(_size_drift_note(ratio, '總大小'))
 
     return result
 
 
 def check_image_file(path, lang, prev_size=None):
     """檢查圖片資料集的輸出檔案"""
+    _check_lang(lang)
     result = CheckResult(f"image-{lang}（{os.path.basename(path) if path else '無檔案'}）")
 
     if not path or not os.path.exists(path):
@@ -625,8 +664,16 @@ def check_image_file(path, lang, prev_size=None):
         result.error('最後一行不是完整的 JSON，檔案可能被截斷')
 
     if samples:
-        drift = _conversion_drift([r.get('title', '') for r in samples], 's2t' if lang == 'tw' else 't2s')
-        if drift > 0.05:
+        # 拿 caption／page 來判，不是 title——圖片記錄沒有 title 這個欄位，
+        # 取到的永遠是空字串，於是這個檢查一路「無可判別字元」空轉。
+        drift = _conversion_drift([f"{r.get('caption', '')}\n{r.get('page', '')}"
+                                   for r in samples],
+                                  's2t' if lang == 'tw' else 't2s')
+        # 樣本裡沒有可判別的字元時回傳 None（例如標題全是英文或數字），
+        # 那是「無從判斷」不是「檢查通過」，直接拿去比大小會 TypeError。
+        if drift is None:
+            result.info('繁簡一致性: 樣本無可判別字元，略過')
+        elif drift > 0.05:
             expect = '繁體' if lang == 'tw' else '簡體'
             result.error(f'繁簡一致性檢查失敗：{drift:.1%} 的字元不符合{expect}')
         else:
@@ -636,7 +683,7 @@ def check_image_file(path, lang, prev_size=None):
         ratio = size / prev_size - 1
         result.info(f"與上一版比較: {ratio:+.1%}（上一版 {_human_size(prev_size)}）")
         if abs(ratio) > SIZE_TOLERANCE:
-            result.error(f'檔案大小與上一版差異 {ratio:+.1%}，超過 ±{SIZE_TOLERANCE:.0%} 容許範圍')
+            result.warn(_size_drift_note(ratio, '檔案大小'))
 
     return result
 
@@ -1206,7 +1253,9 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
                 results[-1].report()
             if upload_omni and omni_files.get(lang):
                 results.append(check_pretrain_files(
-                    omni_files[lang], f'{lang} omni', None))
+                    omni_files[lang], lang, None,
+                    columns=PRETRAIN_COLUMNS + ('images',),
+                    label=f'{lang} omni'))
                 results[-1].report()
             if upload_images:
                 paths = image_files[lang]

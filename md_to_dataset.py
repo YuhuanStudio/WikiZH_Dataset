@@ -11,6 +11,7 @@
 import os
 import re
 import sys
+import time
 from functools import partial
 
 import multiprocessing
@@ -1106,6 +1107,15 @@ def process_directory_variants(input_dir, output_dirs, num_workers=None,
     if not in_shards:
         print(f"✗ {input_dir} 沒有 pages-*.jsonl 分片")
         return {}, 0
+
+    # 台灣詞彙白名單需要一份詞表才知道哪裡是詞的邊界（見 tw_vocab）。
+    # 在 fork 之前裝好，子行程直接繼承，不必每個工人各讀一次。
+    import title_words
+    import tw_vocab
+    t_words = time.perf_counter()
+    tw_vocab.load_guard(title_words.build(input_dir))
+    print(f"詞邊界詞表 {len(tw_vocab._GUARD):,} 個詞"
+          f"（{time.perf_counter() - t_words:.0f} 秒）", flush=True)
     if num_workers is None:
         num_workers = max(1, multiprocessing.cpu_count() - 1)
 
