@@ -173,10 +173,18 @@ _CARD_COMMON = """
 
 
 def _card_header(zh, tasks, glob):
+    """卡片的 YAML 前置資料
+
+    `language` 只吃 ISO 639 的兩三碼（`zh`），書寫系統要另外寫在
+    `language_bcp47`——直接填 `zh-Hant` 會被 HF 的 validate-yaml 擋下
+    （"must only contain lowercase characters"），整個 commit 失敗。
+    """
     tasks_yaml = '\n'.join(f'- {t}' for t in tasks)
     return f"""---
 license: cc-by-sa-4.0
 language:
+- zh
+language_bcp47:
 - {zh}
 task_categories:
 {tasks_yaml}
@@ -1308,6 +1316,34 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
                 results.append(check_image_file(
                     paths[0] if paths else None, lang, uploader.previous_image_size(lang)))
                 results[-1].report()
+
+        # dataset card 的 YAML 也要檢查。這是 dry-run 原本的缺口：它不呼叫
+        # create_commit，所以卡片的前置資料從來沒被驗證過，結果 dry-run 全綠、
+        # 實跑時每個 repo 都倒在 `Invalid metadata in README.md`——而那時
+        # 歸檔已經做掉了。驗證器用 HF 自己的，跟實際 commit 走同一套判準。
+        card_check = CheckResult('dataset card YAML')
+        card_repos = []
+        if upload_pretrain:
+            card_repos += [PRETRAIN_REPOS[l] for l in langs]
+        if upload_omni:
+            card_repos += [OMNI_REPOS[l] for l in langs]
+        if upload_images:
+            card_repos.append(IMAGE_REPO)
+        for repo_id in card_repos:
+            try:
+                uploader.api._validate_yaml(
+                    dataset_card(repo_id, version, dump_date),
+                    repo_type='dataset', token=uploader.token)
+            except AttributeError:
+                card_check.info('此版 huggingface_hub 無法驗證 YAML，略過')
+                break
+            except Exception as e:
+                card_check.error(f'{repo_id}: {e}')
+        else:
+            if not card_check.errors:
+                card_check.info(f'{len(card_repos)} 張卡片的前置資料皆合法')
+        results.append(card_check)
+        card_check.report()
 
         if not all(r.ok for r in results):
             print("\n✗ 上傳前檢查未通過")
