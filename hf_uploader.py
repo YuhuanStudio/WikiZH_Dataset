@@ -86,7 +86,7 @@ _CARD_CHANGES = """
 | 繁簡轉換 | OpenCC `s2twp` | **維基官方轉換表** + 台灣慣用詞白名單（OpenCC 在百科語境誤轉率高：大力支持→大力支援、重整程序→重整程式）|
 | 排版空格 | 有（pangu）| **移除**——不可逆的有損轉換，語料應保真 |
 | 長度過濾 | 有 | **沒有**——一句話的條目也是完整知識 |
-| 圖片 | 54.8 萬列（按檔名全域去重）、圖說有 10.87% 夾著未清的 wiki 標記、繁體檔有 43.8% 的條目名沒轉成繁體 | **91.1 萬列**（保留每張圖的每個使用語境）、圖說殘留標記 0.00%、**新增 `page_id`／`page_url`／`alt`／`section`** |
+| 圖片 | 54.8 萬列（按檔名全域去重）、圖說有 10.87% 夾著未清的 wiki 標記、繁體檔有 43.8% 的條目名沒轉成繁體 | **91.5 萬列**（保留每張圖的每個使用語境）、圖說殘留標記 0.00%、**新增 `page_id`／`page_url`／`alt`／`section`** |
 | 圖文交錯 | 無 | **新增** omni 版（`<image>` 佔位符 + `images` 陣列）|
 
 ### 內容缺失率（全量，非抽樣）
@@ -150,7 +150,7 @@ _CARD_CHANGES = """
 
 殘留那一項要說清楚：`2607` 之所以低，是因為它把含有這些標記的內容整批刪掉了
 ——沒有表格、沒有資訊框、沒有程式碼，自然沒有殘留。`2608` 的殘留已逐筆歸因
-（389 筆全部判定）：`<nowiki>` 字面值、真實內容長得像標記（`{{1,2,3}}` 是集合論、
+並逐筆判讀來源語意：`<nowiki>` 字面值、真實內容長得像標記（`{{1,2,3}}` 是集合論、
 `A<B> a;` 是 C++ 模板語法）、以及原文自己沒關標籤。
 
 筆數從 371 萬「列」變成 148 萬「篇」不是資料變少——切分單位從段落改成整篇。
@@ -173,14 +173,20 @@ _CARD_COMMON = """
 
 | 檢查 | 結果 |
 |---|---|
-| 程式碼區塊與原始碼逐字相符 | 94.3% |
-| 公式與原始碼逐字相符 | 99.3% |
-| 繁簡兩版結構對等 | 20 萬篇中 2 篇不對等 |
-| 空白／私有區字元／表格空儲存格等八類硬性缺陷 | 0 |
+| 程式碼區塊與原始碼逐字相符 | 繁體 94.201%；簡體 94.038% |
+| 公式與原始碼逐字相符 | 繁體 98.662%；簡體 98.670% |
+| 繁簡兩版結構對等 | ID 序列完全一致；抽驗 20,000 篇為 0 個核心結構差異 |
+| 模板／HTML／空白／私有區字元等 15 類硬性缺陷 | 0 |
 
 ## 授權
 
 內容來自維基百科，採 CC BY-SA 4.0。使用時請保留 `url`／`page_url` 欄位以符合署名要求。
+
+## 聯絡與問題回報
+
+- 一般問題：[GitHub Issues](https://github.com/YuhuanStudio/WikiZH_Dataset/issues)
+- Email：[huhu11256@gmail.com](mailto:huhu11256@gmail.com)
+- 安全漏洞：[私密安全性通報](https://github.com/YuhuanStudio/WikiZH_Dataset/security/advisories/new)
 """
 
 
@@ -207,7 +213,7 @@ _CARD_CHANGES_CN = """
 | 繁简转换 | OpenCC | **维基官方转换表**（合并成一张表跑单趟最长匹配，与 MediaWiki 一致）|
 | 排版空格 | 有（pangu）| **移除**——不可逆的有损转换，语料应保真 |
 | 长度过滤 | 有 | **没有**——一句话的条目也是完整知识 |
-| 图片 | 54.8 万行（按文件名全局去重）、图说有 10.87% 夹着未清的 wiki 标记 | **91.1 万行**（保留每张图的每个使用语境）、图说残留标记 0.00%、**新增 `page_id`／`page_url`／`alt`／`section`** |
+| 图片 | 54.8 万行（按文件名全局去重）、图说有 10.87% 夹着未清的 wiki 标记 | **91.5 万行**（保留每张图的每个使用语境）、图说残留标记 0.00%、**新增 `page_id`／`page_url`／`alt`／`section`** |
 | 图文交错 | 无 | **新增** omni 版（`<image>` 占位符 + `images` 数组）|
 
 ### 内容缺失率（全量，非抽样）
@@ -271,7 +277,7 @@ _CARD_CHANGES_CN = """
 
 残留那一项要说清楚：`2607` 之所以低，是因为它把含有这些标记的内容整批删掉了
 ——没有表格、没有信息框、没有代码，自然没有残留。`2608` 的残留已逐条归因
-（389 条全部判定）：`<nowiki>` 字面值、真实内容长得像标记（`{{1,2,3}}` 是集合论、
+并逐条判断来源语义：`<nowiki>` 字面值、真实内容长得像标记（`{{1,2,3}}` 是集合论、
 `A<B> a;` 是 C++ 模板语法）、以及原文自己没关标签。
 
 条数从 371 万“行”变成 148 万“篇”不是数据变少——切分单位从段落改成整篇。
@@ -294,14 +300,20 @@ _CARD_COMMON_CN = """
 
 | 检查 | 结果 |
 |---|---|
-| 代码块与源码逐字相符 | 94.3% |
-| 公式与源码逐字相符 | 99.3% |
-| 繁简两版结构对等 | 20 万篇中 2 篇不对等 |
-| 空白／私有区字符／表格空单元格等八类硬性缺陷 | 0 |
+| 代码块与源码逐字相符 | 繁体 94.201%；简体 94.038% |
+| 公式与源码逐字相符 | 繁体 98.662%；简体 98.670% |
+| 繁简两版结构对等 | ID 序列完全一致；抽验 20,000 篇为 0 个核心结构差异 |
+| 模板／HTML／空白／私有区字符等 15 类硬性缺陷 | 0 |
 
 ## 授权
 
 内容来自维基百科，采 CC BY-SA 4.0。使用时请保留 `url`／`page_url` 字段以符合署名要求。
+
+## 联系与问题反馈
+
+- 一般问题：[GitHub Issues](https://github.com/YuhuanStudio/WikiZH_Dataset/issues)
+- Email：[huhu11256@gmail.com](mailto:huhu11256@gmail.com)
+- 安全漏洞：[私密安全通报](https://github.com/YuhuanStudio/WikiZH_Dataset/security/advisories/new)
 """
 
 
@@ -313,12 +325,14 @@ def _card_header(zh, tasks, glob):
     （"must only contain lowercase characters"），整個 commit 失敗。
     """
     tasks_yaml = '\n'.join(f'- {t}' for t in tasks)
+    scripts = (zh,) if isinstance(zh, str) else tuple(zh)
+    scripts_yaml = '\n'.join(f'- {script}' for script in scripts)
     return f"""---
 license: cc-by-sa-4.0
 language:
 - zh
 language_bcp47:
-- {zh}
+{scripts_yaml}
 task_categories:
 {tasks_yaml}
 size_categories:
@@ -453,7 +467,7 @@ def _omni_readme(lang, version, dump_date):
 
 def _image_card(version, dump_date):
     """圖文配對資料集的卡片（tw/cn 共用一個 repo，以檔名區分）"""
-    return _card_header('zh-Hant', ['image-to-text', 'text-to-image'],
+    return _card_header(('zh-Hant', 'zh-Hans'), ['image-to-text', 'text-to-image'],
                         'wiki_images_dataset*.jsonl') + f"""
 # 中文維基百科圖文配對資料集
 
@@ -461,6 +475,15 @@ def _image_card(version, dump_date):
 與簡體（`wiki_images_dataset_CN.jsonl`）各一份。
 
 > 📅 **目前版本**：`{version}`（維基百科 dump 日期：{format_dump_date(dump_date)}）
+
+HF 的預設 `train` split 會讀入繁簡兩個檔案。只需要其中一種字體時，請明確指定：
+
+```python
+from datasets import load_dataset
+
+tw = load_dataset("{IMAGE_REPO}", data_files="wiki_images_dataset.jsonl", split="train")
+cn = load_dataset("{IMAGE_REPO}", data_files="wiki_images_dataset_CN.jsonl", split="train")
+```
 
 ## 欄位
 

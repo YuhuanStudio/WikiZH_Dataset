@@ -30,7 +30,7 @@ assignees: ''
 ## 如果是資料內容的問題
 
 請附上**條目名稱**與**原始 wikitext 的對應片段**（可從
-<https://zh.wikipedia.org/wiki/條目名?action=raw> 取得）。
+`https://zh.wikipedia.org/wiki/<條目名>?action=raw` 取得；請把 `<條目名>` 換成實際標題）。
 
 判斷是不是缺陷之前，有幾種常見的「看起來像但不是」：
 

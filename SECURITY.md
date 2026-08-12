@@ -10,6 +10,10 @@
 [私密安全性通報](https://github.com/YuhuanStudio/WikiZH_Dataset/security/advisories/new)。
 這個管道只會讓專案維護者看到內容，請勿先建立公開 Issue。
 
+如果無法使用 GitHub 私密通報，也可以寄信至
+[huhu11256@gmail.com](mailto:huhu11256@gmail.com)，主旨請以 `[Security]` 開頭。
+請勿在公開 Issue、討論區或 Pull Request 揭露尚未修正的漏洞細節。
+
 ### 回報內容應包含
 
 - 漏洞的詳細描述

@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/github/license/YuhuanStudio/WikiZH_Dataset?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python)](https://www.python.org/)
-[![GitHub Stars](https://img.shields.io/github/stars/YuhuanStudio/WikiZH_Dataset?style=flat-square&logo=github)](https://github.com/YuhuanStudio/WikiZH_Dataset/stargazers)
+[![GitHub Stars](https://img.shields.io/github/stars/YuhuanStudio/WikiZH_Dataset?style=flat-square&logo=github)](https://github.com/YuhuanStudio/WikiZH_Dataset)
 [![GitHub Forks](https://img.shields.io/github/forks/YuhuanStudio/WikiZH_Dataset?style=flat-square&logo=github)](https://github.com/YuhuanStudio/WikiZH_Dataset/network/members)
 [![GitHub Issues](https://img.shields.io/github/issues/YuhuanStudio/WikiZH_Dataset?style=flat-square&logo=github)](https://github.com/YuhuanStudio/WikiZH_Dataset/issues)
 [![Hugging Face](https://img.shields.io/badge/Datasets-Hugging%20Face-yellow?style=flat-square&logo=huggingface)](https://huggingface.co/yuhuanstudio)
@@ -18,7 +18,7 @@
 | [![HF](https://img.shields.io/badge/wikipedia--zh-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-zh) | 純文字 · 簡體 🇨🇳 | 148 萬篇 |
 | [![HF](https://img.shields.io/badge/wikipedia--omni--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-omni-zh-tw) | 圖文交錯 · 台灣正體 🖼️📝 | 148 萬篇 · 141 萬張圖 |
 | [![HF](https://img.shields.io/badge/wikipedia--omni--zh-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-omni-zh) | 圖文交錯 · 簡體 🖼️📝 | 148 萬篇 · 141 萬張圖 |
-| [![HF](https://img.shields.io/badge/wikipedia--image--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-image-zh-tw) | 圖文配對 🖼️ | 91 萬列 × 繁簡 |
+| [![HF](https://img.shields.io/badge/wikipedia--image--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-image-zh-tw) | 圖文配對 🖼️ | 91.5 萬列 × 繁簡 |
 
 ---
 
@@ -136,15 +136,15 @@ for img in imgs:                       # 圖片的 page_id 就是正文的 id
 | 條目數 | 1,482,182（純文字／omni／繁／簡四組完全相同）|
 | 總字元 | 17.6 億 |
 | Parquet 分片 | 7 個／組，zstd 壓縮 |
-| 圖片列數 | 911,206（繁簡各一份）|
-| omni 圖片總數 | 1,418,299 |
-| 含圖片的條目 | 324,662（21.9%），有圖者平均 4.4 張 |
+| 圖片列數 | 繁體 915,171；簡體 915,167 |
+| omni 圖片總數 | 1,415,992（繁簡各一份）|
+| 含圖片的條目 | 繁體 324,364；簡體 324,363（21.9%），有圖者平均 4.4 張 |
 
 **條目長度分布**（字元）
 
 | p5 | p25 | p50 | p75 | p95 | p99 | max |
 |---|---|---|---|---|---|---|
-| 86 | 209 | 457 | 1,072 | 4,531 | 11,705 | 228,681 |
+| 86 | 209 | 457 | 1,072 | 4,532 | 11,711 | 228,681 |
 
 中位數 457 字反映中文維基的真實樣貌——大量物種、小行星、村里、地理特徵的短條目。
 **沒有長度過濾**，要篩隨時可以自己做。
@@ -154,9 +154,9 @@ for img in imgs:                       # 圖片的 page_id 就是正文的 id
 | | |
 |---|---|
 | 平均章節數 | 3.4 |
-| 無章節（只有前言）| 234,110（15.8%）|
-| 列表為主的條目 | 314,904（21.2%）|
-| 含 LaTeX 公式的條目 | 16,516 |
+| 無章節（只有前言）| 234,132（15.8%）|
+| 列表為主的條目 | 314,783（21.2%）|
+| 含 LaTeX 公式的條目 | 16,497 |
 | 完全重複的文檔 | 12（0.0008%）|
 | 第一行為條目標題 | 99.99% |
 
@@ -190,7 +190,7 @@ for img in imgs:                       # 圖片的 page_id 就是正文的 id
 | | `2607` 以前 | `2608` 起 |
 |---|---|---|
 | 筆數／單位 | 371 萬列（**段落級**）| **148 萬篇**（文檔級，一條目一筆）|
-| 圖片資料集 | 54.8 萬列（按檔名全域去重）| **91.1 萬列**（保留每個使用語境，繁簡各一份）|
+| 圖片資料集 | 54.8 萬列（按檔名全域去重）| **91.5 萬列**（保留每個使用語境，繁簡各一份）|
 | 檔案格式 | JSON 分段（`wiki_pretrain_part*.json`）| **Parquet 分片** |
 | 章節結構 | 切碎後不存在 | 保留 `##` 階層，可直接定位到節 |
 | 形態 | 純文字 + 圖文配對 | **再加圖文交錯（omni）**，三者可用 `id` 互相對照 |
@@ -278,7 +278,7 @@ for img in imgs:                       # 圖片的 page_id 就是正文的 id
 
 **「新增」那幾項要說清楚，不能含糊帶過**：`2607` 之所以是 0，是因為它把含有
 這些標記的內容**整批刪掉了**——沒有表格、沒有資訊框、沒有程式碼，自然沒有殘留。
-`2608` 的那 0.25／0.36 已經逐筆歸因過（389 筆全部判定，見〈品質如何驗證〉）：
+`2608` 的那 0.25／0.36 已經逐筆判讀來源語意（見〈品質如何驗證〉）：
 `<nowiki>` 字面值（維基自己也顯示成那樣）、真實內容長得像標記
 （`{{1,2,3}}` 集合論、`A<B> a;` C++ 模板語法）、以及原文自己沒關標籤。
 
@@ -294,9 +294,9 @@ for img in imgs:                       # 圖片的 page_id 就是正文的 id
 
 | | `2607` 以前 | `2608` 起 |
 |---|---|---|
-| 列數 | 548,032 | **911,206**（×1.66）|
-| 唯一檔名 | 548,032（＝列數，全域去重）| 775,103 |
-| 涵蓋條目 | 245,357 | **296,577** |
+| 列數 | 548,032 | **915,171**（繁體版，×1.67）|
+| 唯一檔名 | 548,032（＝列數，全域去重）| 777,464 |
+| 涵蓋條目 | 245,357 | **297,083** |
 | 圖說殘留標記 | 10.87% | **0.00%** |
 | 條目名不是繁體（繁體檔）| 43.8% | **0.0%** |
 | 欄位 | `url`／`file_name`／`page`／`title`／`tag` | 再加 `page_id`／`page_url`／`alt`／`section`，圖說欄改名 `caption` |
@@ -588,35 +588,25 @@ API 按條目批次查再快取，代價小三個數量級。
 
 | 檢查 | 抓什麼 | 目前結果 |
 |---|---|---|
-| **行為黃金案例** | 每個修好的缺陷留一個案例，改動後必跑 | **75 條全過** |
-| **回溯壓力測試** | 正則指數級回溯（曾讓 13 個 worker 各燒 3 小時 50 分）| **30 項全過** |
+| **行為黃金案例** | 每個修好的缺陷留一個案例，改動後必跑 | **81 條全過** |
+| **回溯壓力測試** | 正則指數級回溯（曾讓 13 個 worker 各燒 3 小時 50 分）| **28 項全過** |
 | **修正驗證** | 每個修正回出貨資料查那一篇條目 | **13 條全過** |
-| **全量硬性缺陷** | 八類必須為 0 | 連續空行、行尾空白、表格空儲存格、私有區字元、控制字元、模板參數殘骸、重定向殘骸、殘留表格 **全部 0** |
-| **殘留標記** | 模板／連結／HTML／ref／實體 | 115／192／65／13／6，**合計 ≤0.013%**（逐筆歸因見下）|
+| **全量硬性缺陷** | 15 類必須為 0 | 模板／表格／連結／ref／HTML／實體殘留，以及私有區字元、控制字元、連續空行等 **全部 0** |
 | **結構不變量** | 圍欄成對、標題層級連續、無空章節 | 圍欄 0、空章節 0、首行 0 |
-| **繁簡結構對等** | 兩版只該差在字體 | 20 萬篇中 **2 篇**（皆為稽核誤判：貨幣 `$`）|
+| **繁簡結構對等** | 兩版只該差在字體 | 抽驗 20,000 篇：**0 個核心結構差異**；1 個地區譯文行數警示 |
 | **字體純度** | 散文裡有沒有「目標字體根本不存在的字」 | 繁體 **3 篇／10 個字**、簡體 10 篇／41 個字（逐字區內的中文註解依設計不轉換，另計）|
 | **詞邊界** | 台灣詞彙白名單有沒有切斷更長的詞 | 已知的 14 種切錯痕跡在 148 萬篇裡 **0 次**（13 次命中經查全是原文本來就這樣寫）|
-| **程式碼逐字比對** | 回頭掃 dump，每個區塊拿去輸出裡找 | **完全相符 94.3%**、只差空白 0.9%、內容不符 2.0%、整塊消失 2.9% |
-| **公式逐字比對** | 同上 | **完全相符 99.3%**、被改動 0.03%、整條消失 0.65% |
-| **表格內容比對** | 同上 | **92.3% OK**、部分缺失 5.8%、大量缺失 1.7%、整張遺失 0.2% |
-| **omni 一致性** | `<image>` 個數 == `images` 長度 | **0 誤差**（141.8 萬張圖）|
-| **圖片資料集** | 欄位、網址、殘留標記、空文字 | **7 項全 0** |
+| **程式碼逐字比對** | 回頭掃 dump，每個區塊拿去輸出裡找 | 繁體 **94.201%**、簡體 **94.038%** 完全相符；只差空白約 0.9% |
+| **公式逐字比對** | 同上 | 繁體 **98.662%**、簡體 **98.670%** 完全相符；被改動約 0.42%、整條消失約 0.91% |
+| **表格內容比對** | 同上 | 繁體 **92.33% OK**、簡體 **93.67% OK**（各抽驗 600 篇）|
+| **omni 一致性** | `<image>` 個數 == `images` 長度 | **0 誤差**（每版 1,415,992 張圖）|
+| **圖片資料集** | 欄位、網址、殘留標記、空文字、重複與 JSON | **8 類缺陷全 0** |
 | **線上逐句對照** | 對照維基渲染結果（外部標準答案）| 覆蓋 88.5%、吻合 94.2%、每篇中位數 100% |
 | **資訊框標籤** | 欄位名是中文還是英文原鍵 | 英文原鍵 **75.4% → 16.4%**，值等於標題 3.0% → 0.07% |
 
-**殘留標記逐筆歸因**（389 筆全部判定，不是抽樣）：
-
-| 類別 | 忠於原文 | 真實內容 | 原文畸形 | 待判 |
-|---|---|---|---|---|
-| 殘留模板 115 | 47.0% | 30.4% | 17.4% | 5.2% |
-| 殘留連結 192 | 34.4% | — | 48.4% | 17.2% |
-| 殘留 HTML 65 | 29.2% | 1.5% | — | 69.2% |
-| 殘留 ref 13 | 30.8% | 7.7% | — | 61.5% |
-
-「待判」逐條查證過：HTML 那批多數是**真實內容**（`A<B> a;` 是 C++ 模板語法、
-契維語的 `<p>` 是音韻學正字法、中古藏語的 `<I>` 是轉寫符號）；ref 那批是**原文
-自己沒關標籤**。「忠於原文」是 `<nowiki>` 字面值——維基渲染出來也是那樣。
+**像標記的真實內容另行判讀**：`A<B> a;` 是 C++ 模板語法、契維語的 `<p>` 是
+音韻學正字法、`{{1,2,3}}` 是集合論記號；`<nowiki>[[X]]</nowiki>` 在維基渲染後
+本來就是字面方括號。硬性閘門會先辨識逐字區與來源語意，不把這些內容誤報成殘留。
 
 **整塊消失逐筆歸因**：程式碼 62 筆（註解內 19.4%、跳過章節 3.2%、圖說內 3.2%）、
 公式 1,322 筆（**圖說內 34.1%**、註解內 12.8%、跳過章節 1.8%、丟棄模板 0.9%）。
@@ -659,10 +649,9 @@ API 按條目批次查再快取，代價小三個數量級。
 一條「獨佔一行的模板要夠長才算正文」的長度門檻把 25 字的引文整段刪掉
 （**那正是專案第一原則禁止的事，而它一直躺在自己的程式碼裡**）。
 
-**做得到與做不到**：剩餘的硬性缺陷都在 0.013% 以下，且多數屬於「忠於原文」——
-`<nowiki>[[X]]</nowiki>` 在維基上顯示的就是字面方括號。絕對的 0 做不到，因為原文
-本身就含畸形標記，而真實內容會長得像標記；能做到的是**每一類缺陷都有結構性的
-處理，而不是靠列名單**。
+**做得到與做不到**：15 類可程式判定的硬性缺陷已全量歸零；原文本身的畸形標記與
+長得像標記的真實內容則保留來源語意並列為品質警示。能做到的是**每一類問題都有
+結構性的處理與證據，而不是靠列名單或把可疑內容整段刪掉**。
 
 ### 稽核工具
 
@@ -677,17 +666,12 @@ API 按條目批次查再快取，代價小三個數量級。
 | `validate_full.py` | 全量硬性缺陷與完整性 |
 | `invariants.py` | 結構不變量：圍欄成對、標題層級連續、無空章節 |
 | `parity.py` | 繁簡結構對等——單一語言看不出來的 bug 靠它現形 |
-| `code_audit.py`／`math_audit.py`／`table_audit.py` | 回頭掃 dump 逐字比對，抓「刪除型」缺陷 |
 | `omni_audit.py` | `<image>` 個數 == `images` 長度 |
 | `image_audit.py` | 圖片資料集的欄位、網址、殘留標記 |
-| `webcmp.py` | 對照線上維基逐句比對（外部標準答案）|
-| `residue_classify.py` | 殘留標記**逐筆歸因**：忠於原文／真實內容／原文畸形／真殘留 |
-| `loss_classify.py` | 整塊消失**逐筆歸因**：圖說內／跳過章節／註解內／丟棄模板／未歸因 |
-| `script_purity.py` | 散文裡還有沒有「目標字體根本不存在的字」，逐字區與散文分開列 |
-| `span_audit.py` | 逐字區段的配對誤判：`$`、`` ` `` 落單時會把散文圈成不轉換區 |
-| `label_from_render.py` | 從渲染後的 HTML 反推資訊框標籤 |
-| `dump_filter.py` | 掃一次 dump 產出「只含相關條目」的過濾檔，五支稽核共用 |
-| `audits.sh` | 全套稽核平行跑（序列 40 分鐘 → 12 分鐘）|
+
+公開工具的完整指令、通過條件與清理政策見 [`qa/README.md`](qa/README.md)。回掃 dump、
+線上逐句對照與歸因探針屬發布期間的延伸審查；探針結論會轉成黃金案例，舊日誌與
+過濾後 dump 不進版控，避免把不可重現的舊輪次結果當成現行閘門。
 
 ---
 
@@ -700,7 +684,7 @@ API 按條目批次查再快取，代價小三個數量級。
 |---|---|
 | 模板表與資訊框標籤表合併成單次掃描 | CPU 時間 −55%（三份 JSON 逐 byte 相同）|
 | 四組資料集共用一次中間層走訪 | 5,000 筆實測 −64%（四版本 SHA-256 相同）|
-| 圖片 tw/cn 單掃雙出 | 1,645 秒 → 737 秒，**2.2×**（兩版 byte-for-byte 相同）|
+| 圖片 tw/cn 單掃雙出 | 1,645 秒 → 737 秒，**2.2×**（同一趟掃描產生兩種字體）|
 | 稽核共用過濾檔 | 494 萬頁 → 88.5 萬頁（17.9%）|
 | 稽核平行跑 | 40 分鐘 → 12 分鐘 |
 | `bz2file` → 標準庫 `bz2` | 每次掃描 −7~12% |
@@ -845,4 +829,7 @@ omni 版是各自獨立的 repo，不跟純文字版混在一起——它多一�
 
 ## 📬 聯絡
 
-透過 [GitHub Issues](https://github.com/YuhuanStudio/WikiZH_Dataset/issues) 聯絡。
+- 一般問題與建議：[GitHub Issues](https://github.com/YuhuanStudio/WikiZH_Dataset/issues)
+- Email：[huhu11256@gmail.com](mailto:huhu11256@gmail.com)
+- 維護者：[YuhuanStudio](https://github.com/YuhuanStudio)
+- 安全漏洞：請依 [SECURITY.md](SECURITY.md) 使用私密通報，勿建立公開 Issue

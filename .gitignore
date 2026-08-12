@@ -234,6 +234,7 @@ qa/*
 !qa/omni_audit.py
 !qa/image_audit.py
 !qa/verify_fixes.py
+!qa/README.md
 # 一次性的工作區：外部工具的日誌、抽樣、暫存腳本
 scratchpad/
 *.log

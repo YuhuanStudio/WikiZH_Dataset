@@ -6,7 +6,8 @@ from unittest import mock
 import image_extractor
 import md_to_dataset
 import wikidata_store
-from hf_uploader import (HFUploader, dump_date_to_version, find_image_files,
+from hf_uploader import (HFUploader, IMAGE_REPO, OMNI_REPOS, PRETRAIN_REPOS,
+                         dataset_card, dump_date_to_version, find_image_files,
                          run_upload, shift_month)
 from image_downloader import (
     _collision_safe_filename,
@@ -38,6 +39,22 @@ from wiki_text import (
 
 
 class OperationalSafetyTests(unittest.TestCase):
+    def test_generated_dataset_cards_match_current_release_documentation(self):
+        repos = (*PRETRAIN_REPOS.values(), *OMNI_REPOS.values(), IMAGE_REPO)
+        cards = {repo: dataset_card(repo, '2608', '20260801') for repo in repos}
+
+        for repo, card in cards.items():
+            with self.subTest(repo=repo):
+                self.assertIn('2026/8/1', card)
+                self.assertIn('huhu11256@gmail.com', card)
+                self.assertIn('91.5', card)
+                self.assertNotIn('91.1', card)
+                self.assertNotIn('99.3%', card)
+
+        image_card = cards[IMAGE_REPO]
+        self.assertIn('- zh-Hant\n- zh-Hans', image_card)
+        self.assertIn('wiki_images_dataset_CN.jsonl', image_card)
+
     def test_image_file_discovery_is_language_scoped(self):
         with tempfile.TemporaryDirectory() as directory:
             names = ('wiki_images_dataset.jsonl',

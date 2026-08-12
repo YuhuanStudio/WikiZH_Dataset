@@ -6,7 +6,7 @@
 
 ### 報告錯誤
 
-如果你發現了錯誤，請透過 [GitHub Issues](../../issues) 回報。在提交 Issue 之前，請先搜尋現有的 Issue 以避免重複。
+如果你發現了錯誤，請透過 [GitHub Issues](https://github.com/YuhuanStudio/WikiZH_Dataset/issues) 回報。在提交 Issue 之前，請先搜尋現有的 Issue 以避免重複。
 
 ### 建議新功能
 
@@ -133,4 +133,8 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 提交你的貢獻代表你同意你的貢獻將使用與本專案相同的授權（Apache 2.0）。
 
-有任何問題嗎？歡迎在 Issue 中提問！
+## 聯絡
+
+一般問題歡迎在 [GitHub Issues](https://github.com/YuhuanStudio/WikiZH_Dataset/issues)
+提問，或寄信至 [huhu11256@gmail.com](mailto:huhu11256@gmail.com)。安全漏洞請依
+[SECURITY.md](SECURITY.md) 私密回報，不要建立公開 Issue。
