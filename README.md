@@ -129,7 +129,7 @@ for img in imgs:                       # 圖片的 page_id 就是正文的 id
 
 ## 📈 資料概況
 
-以 2026-08-04 的 dump 實測（繁體版；簡體版數字相近，結構完全一致）：
+以 2026-08-01 的 dump 實測（繁體版；簡體版數字相近、條目 ID 序列一致）：
 
 | 規模 | |
 |---|---|
@@ -460,6 +460,9 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
+目前多進程解析明確使用 `fork` 來共享大型對照表，因此支援 Linux 與 WSL；
+Windows 原生 Python 沒有 `fork`，請改在 WSL 執行。
+
 ### 💻 常用指令
 
 **每月例行作業**（下載 → 解析 → 生成四組資料集與圖片資訊 → 檢查 → 上傳）：
@@ -469,6 +472,10 @@ uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
 > 只想生成不上傳：加 `--no-upload`
+
+下載器會從 Wikimedia 官方 SHA-1 清單取得真正的 dump 快照日期，並在下載完成後
+同時驗證檔案大小與 SHA-1。第一次解析某月份時也會自動掃描並建立 Wikidata
+動態欄位快取；純離線處理可加 `--skip-wikidata`，但相關欄位值可能留空。
 
 **單步操作**：
 
@@ -659,7 +666,8 @@ API 按條目批次查再快取，代價小三個數量級。
 
 ### 稽核工具
 
-`qa/` 不進版控（見 `.gitignore`），是本機的驗證工具集：
+`qa/` 的核心黃金案例、壓力測試與出貨閘門會進版控；大型驗證資料、日誌及
+一次性分析探針由 `.gitignore` 排除：
 
 | 工具 | 做什麼 |
 |---|---|

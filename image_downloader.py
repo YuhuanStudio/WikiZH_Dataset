@@ -1,151 +1,267 @@
-import os
+"""依圖片資料集 JSONL 安全、可恢復地下載媒體檔。"""
+
+import hashlib
 import json
-import requests
+import os
+import shutil
 import time
-from glob import glob
-from tqdm import tqdm
+import unicodedata
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-def download_images_from_jsonl(jsonl_path, output_dir):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    failed_files = []
-    # 逐行串流讀取，不要 readlines()：圖片 JSONL 是 300 MB、93 萬列，
-    # 一次讀進來光是 list of str 就吃掉數 GB。
-    total_lines = sum(1 for _ in open(jsonl_path, 'r', encoding='utf-8'))
-    pbar = tqdm(total=total_lines, desc=f"下載 {os.path.basename(jsonl_path)}",
-                unit="img", dynamic_ncols=True)
+import requests
+from tqdm import tqdm
 
-    import random
-    # 產生大量 user agent
-    user_agents = []
-    chrome_versions = [str(v) for v in range(80, 121)]
-    firefox_versions = [str(v) for v in range(70, 116)]
-    safari_versions = [str(v) for v in range(10, 17)]
-    os_list = [
-        "Windows NT 10.0; Win64; x64",
-        "Macintosh; Intel Mac OS X 10_15_7",
-        "X11; Linux x86_64",
-        "Linux; Android 10; SM-G975F",
-        "iPhone; CPU iPhone OS 15_0 like Mac OS X"
-    ]
-    for os_str in os_list:
-        for cv in chrome_versions:
-            user_agents.append(f"Mozilla/5.0 ({os_str}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{cv}.0.0.0 Safari/537.36")
-        for fv in firefox_versions:
-            user_agents.append(f"Mozilla/5.0 ({os_str}; rv:{fv}.0) Gecko/20100101 Firefox/{fv}.0")
-        for sv in safari_versions:
-            user_agents.append(f"Mozilla/5.0 ({os_str}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{sv}.0 Safari/605.1.15")
-    # 再加一些常見 UA
-    user_agents += [
-        "Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_2_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15",
-        "Mozilla/5.0 (Linux; Android 9; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.105 Mobile Safari/537.36",
-        "Mozilla/5.0 (iPad; CPU OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15A5341f Safari/604.1"
-    ]
-    import shutil
-    def download_one(data):
-        url = data.get('url')
-        file_name = data.get('file_name')
-        if not url or not file_name:
-            return None, None, 'no_url_or_name'
-        # 處理 file_name 前的 image/ 路徑
-        if file_name.startswith('image/'):
-            short_name = file_name[len('image/'):]
+USER_AGENT = (
+    "WikiZH-Dataset/2.0 "
+    "(https://github.com/YuhuanStudio/WikiZH_Dataset)"
+)
+MAX_WORKERS = 8
+PENDING_LIMIT = 512
+_WINDOWS_RESERVED = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def _safe_filename(file_name):
+    """把維基檔名映射成單一、不可跳出輸出目錄的本地檔名。"""
+    name = str(file_name or "")
+    if name.lower().startswith("image/"):
+        name = name[len("image/") :]
+
+    # `%` 先跳脫，讓 `a/b` 與原本就叫 `a%2Fb` 的檔案不會碰撞。
+    unsafe = set('/\\:*?"<>|%')
+    pieces = []
+    for char in name:
+        if char in unsafe or ord(char) < 32:
+            pieces.extend(f"%{byte:02X}" for byte in char.encode("utf-8"))
         else:
-            short_name = file_name
-        out_path = os.path.join(output_dir, short_name)
-        # 檢查 output_dir 是否已存在
-        if os.path.exists(out_path):
-            return file_name, 'exists', None
-        # 檢查舊版資料夾是否有檔案
-        old_image_dir = 'old_images'
-        old_path = os.path.join(old_image_dir, short_name)
-        if os.path.exists(old_path):
+            pieces.append(char)
+    safe = "".join(pieces).rstrip(" .")
+    if not safe:
+        safe = hashlib.sha256(name.encode("utf-8")).hexdigest()
+
+    stem = safe.split(".", 1)[0].upper()
+    if stem in _WINDOWS_RESERVED:
+        safe = "_" + safe
+
+    # NTFS/ext4 常見的單一檔名上限是 255 bytes；預留副檔名與暫存後綴空間。
+    if len(os.fsencode(safe)) > 220:
+        root, ext = os.path.splitext(safe)
+        suffix = "-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+        while root and len(os.fsencode(root + suffix + ext)) > 220:
+            root = root[:-1]
+        safe = (root or "image") + suffix + ext
+    return safe
+
+
+def _is_complete(path):
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def _is_allowed_source_url(url):
+    """圖片清單只允許本專案產生的 Wikipedia Special:FilePath URL。"""
+    try:
+        parsed = urllib.parse.urlsplit(str(url))
+    except ValueError:
+        return False
+    return (parsed.scheme == 'https' and parsed.hostname == 'zh.wikipedia.org'
+            and parsed.path.startswith('/wiki/Special:FilePath/'))
+
+
+def _collision_safe_filename(file_name, used, resolved):
+    """在大小寫不敏感的檔案系統上也維持一對一映射。"""
+    if file_name in resolved:
+        return resolved[file_name]
+    safe = _safe_filename(file_name)
+    key = unicodedata.normalize('NFC', safe).casefold()
+    owner = used.get(key)
+    if owner is not None and owner != file_name:
+        root, ext = os.path.splitext(safe)
+        digest = hashlib.sha256(file_name.encode('utf-8')).hexdigest()
+        for length in (12, 20, 32, 64):
+            candidate = f'{root}-{digest[:length]}{ext}'
+            key = unicodedata.normalize('NFC', candidate).casefold()
+            if key not in used:
+                safe = candidate
+                break
+        else:  # SHA-256 全長仍碰撞在實務上不可達；明確失敗勝過覆寫別人的檔。
+            raise ValueError(f'本地圖片檔名碰撞: {file_name!r}')
+    used[key] = file_name
+    resolved[file_name] = safe
+    return safe
+
+
+def download_images_from_jsonl(jsonl_path, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    output_dir = os.path.abspath(output_dir)
+    failed_files = []
+    used_local_names = {}
+    resolved_local_names = {}
+
+    # 逐行串流讀取；第一趟只計數，避免把數百 MB JSONL 一次載入記憶體。
+    with open(jsonl_path, "r", encoding="utf-8") as fh:
+        total_lines = sum(1 for _ in fh)
+    pbar = tqdm(
+        total=total_lines,
+        desc=f"下載 {os.path.basename(jsonl_path)}",
+        unit="img",
+        dynamic_ncols=True,
+    )
+
+    def local_path(file_name):
+        local_name = _collision_safe_filename(
+            file_name, used_local_names, resolved_local_names)
+        path = os.path.abspath(os.path.join(output_dir, local_name))
+        if os.path.commonpath((output_dir, path)) != output_dir:
+            raise ValueError(f"不安全的圖片檔名: {file_name!r}")
+        return path
+
+    def download_one(data):
+        url = data.get("url")
+        file_name = data.get("file_name")
+        if not url or not file_name:
+            return file_name, "fail", "缺少 url 或 file_name"
+        if not _is_allowed_source_url(url):
+            return file_name, "fail", f"不允許的圖片來源 URL: {url!r}"
+
+        try:
+            out_path = local_path(file_name)
+        except ValueError as exc:
+            return file_name, "fail", str(exc)
+        if _is_complete(out_path):
+            return file_name, "exists", None
+
+        old_path = os.path.join("old_images", os.path.basename(out_path))
+        if _is_complete(old_path):
             try:
-                os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 shutil.copy2(old_path, out_path)
-                return file_name, 'copied', None
-            except Exception as e:
-                return file_name, 'fail', f'copy_error: {e}'
+                return file_name, "copied", None
+            except OSError as exc:
+                return file_name, "fail", f"複製舊檔失敗: {exc}"
+
         headers = {
-            "User-Agent": random.choice(user_agents),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Connection": "keep-alive",
-            "Referer": "https://zh.wikipedia.org/",
-            "Cache-Control": "no-cache"
+            "User-Agent": USER_AGENT,
+            "Accept": "image/*,video/*,audio/*,application/pdf;q=0.9,*/*;q=0.1",
         }
-        success = False
+        partial_path = out_path + ".part"
         last_error = None
         for attempt in range(3):
             try:
-                resp = requests.get(url, headers=headers, timeout=30)
-                if resp.status_code == 200:
-                    with open(out_path, 'wb') as img_file:
-                        img_file.write(resp.content)
-                    success = True
-                    return file_name, 'success', None
-                elif resp.status_code == 429:
-                    last_error = f"狀態碼: {resp.status_code} Too Many Requests (重試 {attempt+1})"
-                    time.sleep(3 + attempt * 2)  # 429 時退避更久
-                else:
-                    last_error = f"狀態碼: {resp.status_code} (重試 {attempt+1})"
-                    time.sleep(0.5)
-            except Exception as e:
-                last_error = f"錯誤: {e} (重試 {attempt+1})"
-                time.sleep(0.5)
-        return file_name, 'fail', last_error
+                with requests.get(
+                    url, headers=headers, timeout=(15, 60), stream=True
+                ) as response:
+                    if response.status_code == 429:
+                        last_error = f"HTTP 429（第 {attempt + 1} 次）"
+                        time.sleep(3 + attempt * 2)
+                        continue
+                    if response.status_code != 200:
+                        last_error = f"HTTP {response.status_code}（第 {attempt + 1} 次）"
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
+                    content_type = response.headers.get("content-type", "").lower()
+                    allowed_types = (
+                        'image/', 'video/', 'audio/', 'application/pdf',
+                        'application/ogg', 'application/octet-stream',
+                    )
+                    if (content_type
+                            and not content_type.startswith(allowed_types)):
+                        raise ValueError(
+                            f"伺服器回傳非媒體內容: {content_type}")
+
+                    expected = int(response.headers.get("content-length", 0) or 0)
+                    written = 0
+                    with open(partial_path, "wb") as image_file:
+                        for chunk in response.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                image_file.write(chunk)
+                                written += len(chunk)
+                    if written == 0:
+                        raise ValueError("伺服器回傳空檔案")
+                    if expected and written != expected:
+                        raise ValueError(f"檔案被截斷: {written} != {expected}")
+                    os.replace(partial_path, out_path)
+                    return file_name, "success", None
+            except (OSError, requests.RequestException, ValueError) as exc:
+                last_error = f"{type(exc).__name__}: {exc}（第 {attempt + 1} 次）"
+                try:
+                    if os.path.exists(partial_path):
+                        os.remove(partial_path)
+                except OSError:
+                    pass
+                time.sleep(0.5 * (attempt + 1))
+        return file_name, "fail", last_error
 
     def report(file_name, status):
-        label = {'fail': '下載失敗', 'success': '下載成功',
-                 'exists': '已存在', 'copied': '已複製(舊版)'}.get(status, status)
-        pbar.set_postfix({"狀態": label, "檔案": file_name,
-                          "失敗累計": len(failed_files)})
+        label = {
+            "fail": "下載失敗",
+            "success": "下載成功",
+            "exists": "已存在",
+            "copied": "已複製(舊版)",
+        }.get(status, status)
+        pbar.set_postfix(
+            {"狀態": label, "檔案": file_name or "?", "失敗累計": len(failed_files)}
+        )
         pbar.update(1)
 
-    # 同一張圖會出現在多篇條目（資料集刻意一次使用一列），檔名因此重複。
-    # 不去重的話多個執行緒會同時寫同一個檔案，內容互相蓋掉。
     seen = set()
-    # 一次只掛 batch 個工作，不要把 93 萬個 future 全塞進記憶體
-    batch = 2000
-
-    with ThreadPoolExecutor(max_workers=15) as executor:
+    errors = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         pending = {}
 
         def drain(limit):
             while len(pending) >= limit and pending:
-                done = next(as_completed(list(pending)))
-                file_name, status, _err = done.result()
+                done = next(as_completed(tuple(pending)))
+                file_name, status, error = done.result()
                 pending.pop(done, None)
-                if status == 'fail':
+                if status == "fail":
                     failed_files.append(file_name)
+                    if len(errors) < 20:
+                        errors.append((file_name, error))
                 report(file_name, status)
 
-        with open(jsonl_path, 'r', encoding='utf-8') as fh:
-            for line in fh:
+        with open(jsonl_path, "r", encoding="utf-8") as fh:
+            for line_number, line in enumerate(fh, 1):
                 try:
                     data = json.loads(line)
-                except Exception:
+                except json.JSONDecodeError as exc:
+                    failed_files.append(f"第 {line_number} 行")
+                    if len(errors) < 20:
+                        errors.append((f"第 {line_number} 行", f"JSON 錯誤: {exc}"))
                     pbar.update(1)
                     continue
-                file_name = data.get('file_name')
+                file_name = data.get("file_name")
                 if not file_name:
+                    failed_files.append(f"第 {line_number} 行")
                     pbar.update(1)
                     continue
                 if file_name in seen:
-                    report(file_name, 'exists')       # 同一張圖，前面已排程
+                    report(file_name, "exists")
                     continue
                 seen.add(file_name)
-                out_path = os.path.join(output_dir, file_name)
-                if os.path.exists(out_path):
-                    report(file_name, 'exists')
+                try:
+                    out_path = local_path(file_name)
+                except ValueError as exc:
+                    failed_files.append(file_name)
+                    errors.append((file_name, str(exc)))
+                    report(file_name, "fail")
+                    continue
+                if _is_complete(out_path):
+                    report(file_name, "exists")
                     continue
                 pending[executor.submit(download_one, data)] = file_name
-                drain(batch)
+                drain(PENDING_LIMIT)
 
         drain(1)
 
+    pbar.close()
+    if errors:
+        print(f"⚠ {len(failed_files):,} 筆下載失敗；前 {len(errors)} 筆：")
+        for file_name, error in errors:
+            print(f"  {file_name}: {error}")
     return failed_files
-

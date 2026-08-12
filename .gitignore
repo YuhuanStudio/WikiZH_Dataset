@@ -222,8 +222,18 @@ wiki_zh_dataset/
 
 # 本機工具設定
 .claude/
-# QA／稽核用的一次性分析腳本（不進版控）
+# QA 的核心出貨閘門進版控；大型驗證資料、日誌與一次性探針留在本機。
 qa/
+!qa/
+qa/*
+!qa/cases.py
+!qa/stress.py
+!qa/validate_full.py
+!qa/invariants.py
+!qa/parity.py
+!qa/omni_audit.py
+!qa/image_audit.py
+!qa/verify_fixes.py
 # 一次性的工作區：外部工具的日誌、抽樣、暫存腳本
 scratchpad/
 *.log

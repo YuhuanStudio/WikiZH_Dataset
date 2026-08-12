@@ -1,0 +1,35 @@
+name: Core QA
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt ruff bandit pip-audit
+      - name: Dependency vulnerability audit
+        run: pip-audit -r requirements.txt
+      - name: Static correctness checks
+        run: ruff check . --select E9,F401,F63,F7,F82,F841,B023,B033,B905,RUF012
+      - name: Security static analysis
+        run: bandit -q -r . -x ./qa
+      - name: Compile tracked Python modules
+        run: python -m compileall -q .
+      - name: Operational unit tests
+        run: python -m unittest discover -s tests
+      - name: Golden behavior cases
+        run: python qa/cases.py
+      - name: Regex stress cases
+        run: python qa/stress.py

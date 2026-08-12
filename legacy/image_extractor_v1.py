@@ -1,6 +1,5 @@
 import re
 import json
-import sys
 import bz2
 from tqdm import tqdm
 
@@ -81,14 +80,19 @@ def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
             two = tag_content[i:i + 2]
             if two in ('[[', '{{'):
                 depth += 1
-                buf.append(two); i += 2
+                buf.append(two)
+                i += 2
             elif two in (']]', '}}'):
                 depth = max(0, depth - 1)
-                buf.append(two); i += 2
+                buf.append(two)
+                i += 2
             elif tag_content[i] == '|' and depth == 0:
-                parts.append(''.join(buf)); buf = []; i += 1
+                parts.append(''.join(buf))
+                buf = []
+                i += 1
             else:
-                buf.append(tag_content[i]); i += 1
+                buf.append(tag_content[i])
+                i += 1
         parts.append(''.join(buf))
         return parts
 
@@ -183,7 +187,6 @@ def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
 
     is_bz2 = xml_path.endswith('.bz2')
     print("開始擷取圖片資訊...")
-    processed_lines = 0
     if is_bz2:
         file_obj = bz2.open(xml_path, 'rt', encoding='utf-8')
     else:
@@ -216,8 +219,6 @@ def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
                     continue
                 if file_name in seen_files:
                     continue  # 已經處理過，跳過重複
-                # 修改 file_name 欄位為 image/file_name
-                file_name_out = f"image/{file_name}"
                 url = f"https://zh.wikipedia.org/wiki/Special:FilePath/{file_name.replace(' ', '_')}"
                 title_raw = parse_title(raw_file_tag, file_name, current_page)
                 # 如果沒有說明（title_raw 為 None），則跳過，不使用檔名當描述

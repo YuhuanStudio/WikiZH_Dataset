@@ -25,6 +25,9 @@
 import json
 import os
 import re
+import shutil
+import tempfile
+import urllib.parse
 
 import bz2
 from gensim.corpora.wikicorpus import extract_pages
@@ -120,6 +123,26 @@ def split_params(body):
     return parts
 
 
+def _close_unmatched_markup(text):
+    """只在字串尾端補齊未配對的 ``{{``／``[[``。"""
+    pairs = {'}}': '{{', ']]': '[['}
+    closers = {'{{': '}}', '[[': ']]'}
+    stack = []
+    i = 0
+    while i < len(text) - 1:
+        token = text[i:i + 2]
+        if token in ('{{', '[['):
+            stack.append(token)
+            i += 2
+        elif token in pairs:
+            if stack and stack[-1][0] == pairs[token]:
+                stack.pop()
+            i += 2
+        else:
+            i += 1
+    return text + ''.join(closers[token] for token in reversed(stack))
+
+
 def find_image_tags(text):
     """用括號配對找出整頁的 [[File:…]]，回傳 (在原文的位置, 內容)
 
@@ -184,6 +207,13 @@ def clean_caption(raw, page_title, lang):
     text = expand_inline_templates(text)
     # 模板本體裡也寫著 -{zh-cn:…;zh-tw:…}-，展開後要再挑一次（同 wiki_parser）
     text = resolve_variant_markers(text)
+    # strip_leftover_markup 遇到未閉合的模板會把整句清空；直接截在模板前又會
+    # 丟掉 ``{{center|完整圖說`` 裡的有效文字。只在尾端補虛擬收尾，再走一次
+    # 正常模板展開：不改來源內容，卻能把 le／center／small 等包裝安全剝掉。
+    closed = _close_unmatched_markup(text)
+    if closed != text:
+        text = expand_inline_templates(closed)
+        text = resolve_variant_markers(text)
     text = strip_leftover_markup(text)
     # 還留著 `[[`／`{{` 表示原始碼本來就沒收尾，後面已不是可讀的圖說
     cut = min((i for i in (text.find('[['), text.find('{{')) if i >= 0), default=-1)
@@ -249,7 +279,7 @@ def parse_usage(body, page_title, lang):
 
 def _file_url(file_name):
     return ('https://zh.wikipedia.org/wiki/Special:FilePath/'
-            + file_name.replace(' ', '_'))
+            + urllib.parse.quote(file_name.replace(' ', '_'), safe='(),;=@_'))
 
 
 def _page_url(raw_title):
@@ -259,19 +289,94 @@ def _page_url(raw_title):
         lambda m: f'%{ord(m.group(0)):02X}', slug)
 
 
-def _install_word_guard():
-    """裝上詞邊界詞表；圖說走的是與正文同一條轉換，護欄也該一樣"""
+def _install_word_guard(page_dir=None):
+    """裝上詞邊界詞表；指定中間層時不得退回 cwd 的正式快取。"""
     import title_words
     import tw_vocab
-    words = title_words.load()
+    words = title_words.load(page_dir)
+    # 即使找不到詞表也要清掉同一行程先前裝過的護欄，否則第二次抽取仍會
+    # 偷用上一個（可能屬於正式輸出）的詞表。
+    tw_vocab.load_guard(words)
     if words:
-        tw_vocab.load_guard(words)
         print(f'詞邊界詞表 {len(words):,} 個詞')
     else:
-        print('⚠ 找不到 parsed/*/title_words.json，台灣詞彙白名單沒有詞邊界護欄')
+        source = os.path.join(page_dir, 'title_words.json') if page_dir else (
+            'parsed/*/title_words.json')
+        print(f'⚠ 找不到 {source}，台灣詞彙白名單沒有詞邊界護欄')
 
 
-def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
+_IMAGE_STAGE_PREFIX = '.wikizh-image-staging-'
+_IMAGE_BACKUP_PREFIX = '.wikizh-image-backup-'
+
+
+def _image_family_pattern(base, ext):
+    """同一輸出 stem 的正式單檔與 `_N` 分片。"""
+    stem = os.path.basename(base)
+    return re.compile(
+        rf'^{re.escape(stem)}(?:_\d+)?{re.escape(ext)}$')
+
+
+def _discard_image_staging(states):
+    for state in states.values():
+        staging = state.get('staging_dir')
+        if staging:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def _promote_image_states(states):
+    """所有語言都成功後才發布；失敗時還原上一版圖片 JSONL。"""
+    backups = []
+    backup_dirs = []
+    published = []
+    try:
+        for state in states.values():
+            output_dir = state['final_output_dir']
+            backup_dir = tempfile.mkdtemp(
+                prefix=_IMAGE_BACKUP_PREFIX, dir=output_dir)
+            backup_dirs.append(backup_dir)
+            family = _image_family_pattern(state['final_base'], state['ext'])
+            for name in sorted(os.listdir(output_dir)):
+                if not family.fullmatch(name):
+                    continue
+                original = os.path.join(output_dir, name)
+                backup = os.path.join(backup_dir, name)
+                os.replace(original, backup)
+                backups.append((original, backup))
+
+        for state in states.values():
+            promoted = []
+            staged_files = state['staged_files']
+            for staged in staged_files:
+                if len(staged_files) == 1:
+                    target = state['final_base'] + state['ext']
+                else:
+                    target = os.path.join(
+                        state['final_output_dir'], os.path.basename(staged))
+                os.replace(staged, target)
+                published.append(target)
+                promoted.append(target)
+            state['published_files'] = promoted
+    except Exception:
+        for target in reversed(published):
+            try:
+                os.remove(target)
+            except FileNotFoundError:
+                pass
+        for original, backup in reversed(backups):
+            if os.path.exists(backup):
+                os.replace(backup, original)
+        _discard_image_staging(states)
+        for directory in backup_dirs:
+            shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+    for directory in backup_dirs:
+        shutil.rmtree(directory, ignore_errors=True)
+    _discard_image_staging(states)
+
+
+def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw',
+                        page_dir=None):
     """
     走訪整份 dump，輸出圖片與圖說的 JSONL。
 
@@ -280,15 +385,35 @@ def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
         output_json: 輸出路徑；分片時加上 `_N` 序號
         max_images: 上限（測試用）
         lang: 'tw' 或 'cn'
+        page_dir: 詞邊界詞表所屬的中間層目錄；未指定時沿用舊行為
 
     Returns:
         int: 寫出的記錄數
     """
-    _install_word_guard()
+    if lang not in ('tw', 'cn'):
+        raise ValueError(f"lang 只能是 'tw' 或 'cn'，收到 {lang!r}")
+    if max_images is not None and max_images <= 0:
+        raise ValueError('max_images 必須是正整數')
+    _install_word_guard(page_dir)
     opener = bz2.open if xml_path.endswith('.bz2') else open
-    base, ext = os.path.splitext(output_json)
-    if os.path.dirname(output_json):
-        os.makedirs(os.path.dirname(output_json), exist_ok=True)
+    final_base, ext = os.path.splitext(output_json)
+    output_dir = os.path.dirname(output_json) or '.'
+    os.makedirs(output_dir, exist_ok=True)
+    for name in os.listdir(output_dir):
+        path = os.path.join(output_dir, name)
+        if name.startswith(_IMAGE_BACKUP_PREFIX) and os.path.isdir(path):
+            raise RuntimeError(f'發現未處理的圖片資料備份：{path}')
+        if name.startswith(_IMAGE_STAGE_PREFIX) and os.path.isdir(path):
+            shutil.rmtree(path)
+    staging_dir = tempfile.mkdtemp(
+        prefix=_IMAGE_STAGE_PREFIX, dir=output_dir)
+    base = os.path.join(staging_dir, os.path.basename(final_base))
+    states = {'single': {
+        'staging_dir': staging_dir,
+        'final_output_dir': output_dir,
+        'final_base': final_base,
+        'ext': ext,
+    }}
 
     total = file_idx = 0
     file_idx = 1
@@ -319,12 +444,13 @@ def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
                 # 範圍限本頁——同一張圖出現在別的條目是另一回事。
                 seen = set()
                 for pos, body in bodies:
-                    # 單一圖片解析失敗不該中斷整批
                     try:
                         parsed = parse_usage(body, page_title, lang)
-                    except Exception:
+                    except Exception as exc:
                         failed += 1
-                        continue
+                        raise RuntimeError(
+                            f'圖片語法解析失敗：{raw_title!r} '
+                            f'({type(exc).__name__}: {exc})') from exc
                     if not parsed:
                         continue
                     file_name, caption, alt = parsed
@@ -368,17 +494,32 @@ def extract_wiki_images(xml_path, output_json, max_images=None, lang='tw'):
                         raise StopIteration
     except StopIteration:
         pass
+    except Exception:
+        _discard_image_staging(states)
+        raise
     finally:
         out.close()
         pbar.close()
 
+    if file_idx > 1 and bytes_written == 0:
+        os.remove(f'{base}_{file_idx}{ext}')
+        file_idx -= 1
+
     if failed:
-        print(f'⚠ {failed} 個圖片語法解析失敗（已跳過）')
+        _discard_image_staging(states)
+        raise RuntimeError(f'{failed} 個圖片語法解析失敗')
+    if total <= 0:
+        _discard_image_staging(states)
+        raise RuntimeError('圖片資料集為空')
+    states['single']['staged_files'] = [
+        f'{base}_{index}{ext}' for index in range(1, file_idx + 1)]
+    _promote_image_states(states)
     print(f'✓ 完成：{total:,} 筆圖片記錄，{file_idx} 個分片')
     return total
 
 
-def extract_wiki_images_variants(xml_path, output_jsons, max_images=None):
+def extract_wiki_images_variants(xml_path, output_jsons, max_images=None,
+                                 page_dir=None):
     """單次走訪 dump，同時輸出 tw / cn 圖片 JSONL。
 
     圖片語法定位、章節定位與 XML/bz2 解壓都只做一次；只有真正與語言有關的
@@ -387,26 +528,45 @@ def extract_wiki_images_variants(xml_path, output_jsons, max_images=None):
 
     Args:
         output_jsons: ``{'tw': '/path/tw.jsonl', 'cn': '/path/cn.jsonl'}``
+        page_dir: 詞邊界詞表所屬的中間層目錄；未指定時沿用舊行為
 
     Returns:
         dict: ``{'tw': 筆數, 'cn': 筆數}``
     """
     if set(output_jsons) != {'tw', 'cn'}:
         raise ValueError("output_jsons 必須同時提供 'tw' 與 'cn'")
+    if max_images is not None and max_images <= 0:
+        raise ValueError('max_images 必須是正整數')
 
-    _install_word_guard()
+    _install_word_guard(page_dir)
 
     opener = bz2.open if xml_path.endswith('.bz2') else open
+    output_dirs = {
+        os.path.dirname(path) or '.' for path in output_jsons.values()
+    }
+    for output_dir in output_dirs:
+        os.makedirs(output_dir, exist_ok=True)
+        for name in os.listdir(output_dir):
+            path = os.path.join(output_dir, name)
+            if name.startswith(_IMAGE_BACKUP_PREFIX) and os.path.isdir(path):
+                raise RuntimeError(f'發現未處理的圖片資料備份：{path}')
+            if name.startswith(_IMAGE_STAGE_PREFIX) and os.path.isdir(path):
+                shutil.rmtree(path)
+
     states = {}
     for lang in ('tw', 'cn'):
         output_json = output_jsons[lang]
         base, ext = os.path.splitext(output_json)
-        if os.path.dirname(output_json):
-            os.makedirs(os.path.dirname(output_json), exist_ok=True)
+        output_dir = os.path.dirname(output_json) or '.'
+        staging_dir = tempfile.mkdtemp(
+            prefix=_IMAGE_STAGE_PREFIX, dir=output_dir)
+        stage_base = os.path.join(staging_dir, os.path.basename(base))
         states[lang] = {
-            'base': base, 'ext': ext, 'total': 0, 'file_idx': 1,
+            'base': stage_base, 'final_base': base,
+            'final_output_dir': output_dir, 'staging_dir': staging_dir,
+            'ext': ext, 'total': 0, 'file_idx': 1,
             'bytes': 0, 'failed': 0,
-            'out': open(f'{base}_1{ext}', 'w', encoding='utf-8'),
+            'out': open(f'{stage_base}_1{ext}', 'w', encoding='utf-8'),
         }
 
     pbar = tqdm(total=(max_images * 2 if max_images is not None else None),
@@ -442,9 +602,11 @@ def extract_wiki_images_variants(xml_path, output_jsons, max_images=None):
                         page_title = page_titles[lang]
                         try:
                             parsed = parse_usage(body, page_title, lang)
-                        except Exception:
+                        except Exception as exc:
                             state['failed'] += 1
-                            continue
+                            raise RuntimeError(
+                                f'{lang} 圖片語法解析失敗：{raw_title!r} '
+                                f'({type(exc).__name__}: {exc})') from exc
                         if not parsed:
                             continue
                         file_name, caption, alt = parsed
@@ -484,18 +646,42 @@ def extract_wiki_images_variants(xml_path, output_jsons, max_images=None):
                         and all(s['total'] >= max_images
                                 for s in states.values())):
                     break
-    finally:
+    except Exception:
         for state in states.values():
             state['out'].close()
         pbar.close()
+        _discard_image_staging(states)
+        raise
+
+    for state in states.values():
+        state['out'].close()
+    pbar.close()
 
     totals = {}
+    try:
+        for lang, state in states.items():
+            if state['file_idx'] > 1 and state['bytes'] == 0:
+                os.remove(
+                    f"{state['base']}_{state['file_idx']}{state['ext']}")
+                state['file_idx'] -= 1
+            if state['failed']:
+                raise RuntimeError(
+                    f"{lang}: {state['failed']} 個圖片語法解析失敗")
+            if state['total'] <= 0:
+                raise RuntimeError(f'{lang}: 圖片資料集為空')
+            state['staged_files'] = [
+                f"{state['base']}_{index}{state['ext']}"
+                for index in range(1, state['file_idx'] + 1)
+            ]
+            totals[lang] = state['total']
+        _promote_image_states(states)
+    except Exception:
+        _discard_image_staging(states)
+        raise
+
     for lang, state in states.items():
-        if state['failed']:
-            print(f"⚠ {lang}: {state['failed']} 個圖片語法解析失敗（已跳過）")
         print(f"✓ {lang}: {state['total']:,} 筆圖片記錄，"
               f"{state['file_idx']} 個分片")
-        totals[lang] = state['total']
     return totals
 
 
@@ -507,6 +693,8 @@ if __name__ == '__main__':
     ap.add_argument('output_json')
     ap.add_argument('--lang', choices=['tw', 'cn'], default='tw')
     ap.add_argument('--max-images', type=int)
+    ap.add_argument('--page-dir', help='指定 title_words.json 所屬的中間層目錄')
     args = ap.parse_args()
     extract_wiki_images(args.xml_path, args.output_json,
-                        max_images=args.max_images, lang=args.lang)
+                        max_images=args.max_images, lang=args.lang,
+                        page_dir=args.page_dir)

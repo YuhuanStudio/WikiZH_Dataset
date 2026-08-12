@@ -11,6 +11,7 @@ wikitext 解析
    用詞來源，中間層是 tw/cn 共用的，所以兩個版本都帶下去，由下游各自挑。
 """
 
+import ast
 import re
 import bz2
 from gensim.corpora.wikicorpus import extract_pages, filter_wiki
@@ -61,8 +62,8 @@ _DROP_TEMPLATES = {
     # 頁首導航（hatnote）：「關於其他用法，請見…」這類提示不是條目內容。
     # 未知模板的保底展開會把它們的參數當成正文，讓「數學」條目開頭多出
     # 「Math、Maths」「數學 (消歧義)」兩行。
-    'about', 'redirect', 'redirect2', 'otheruses', 'otheruseslist', 'other uses',
-    'distinguish', 'for', 'hatnote', 'dablink', 'this', 'noteta', 'notetaa',
+    'about', 'redirect2', 'otheruses', 'otheruseslist', 'other uses',
+    'distinguish', 'for', 'hatnote', 'dablink', 'this', 'notetaa',
     'confused', 'seealso2', 'main other', 'pp-protected', 'pp', 'protection',
     '關於', '关于', '不是', '其他用法', '各地中文名', '大陸用詞',
     # 維護模板：{{unreferenced}}、{{stub}} 這類提示框也不是內容
@@ -285,9 +286,10 @@ def _split_top_level(raw):
     parts, depth, last = [], 0, 0
     for m in _ARG_TOKEN_RE.finditer(raw):
         token = m.group(0)
-        if token == '[[':
+        # 下面兩個常數是 wiki 連結定界符，不是密碼。
+        if token == '[[':  # nosec B105
             depth += 1
-        elif token == ']]':
+        elif token == ']]':  # nosec B105
             depth = max(0, depth - 1)
         elif depth == 0:
             parts.append(raw[last:m.start()])
@@ -419,6 +421,8 @@ _IMAGE_MARK_RE = re.compile(IMAGE_MARK + r'(\d+)' + IMAGE_MARK)
 
 _IMAGE_MARK_LINE_RE = re.compile(
     r'(?m)^[ \t]*(?:' + IMAGE_MARK + r'\d+' + IMAGE_MARK + r'[ \t]*)+\n?')
+_IMAGE_MARK_BETWEEN_MATH_RE = re.compile(
+    r'(?<=\$)(?:' + IMAGE_MARK + r'\d+' + IMAGE_MARK + r')+(?=\$)')
 
 
 def strip_image_marks(s):
@@ -429,7 +433,11 @@ def strip_image_marks(s):
     """
     if IMAGE_MARK not in s:
         return s
-    return _IMAGE_MARK_RE.sub('', _IMAGE_MARK_LINE_RE.sub('', s))
+    s = _IMAGE_MARK_LINE_RE.sub('', s)
+    # 圖片夾在兩段公式之間時，直接刪除會把 ``$a$`` 與 ``$b$`` 黏成
+    # ``$a$$b$``。只在這個精確情形留下空白，其餘圖片標記照舊移除。
+    s = _IMAGE_MARK_BETWEEN_MATH_RE.sub(' ', s)
+    return _IMAGE_MARK_RE.sub('', s)
 
 
 def remove_file_links(s, sink=None):
@@ -1152,7 +1160,7 @@ def _take_cell_fences(cell, blocks):
     """
     def repl(m):
         body = m.group(1).strip('\n')
-        lines = [l for l in body.split('\n') if l.strip()]
+        lines = [line for line in body.split('\n') if line.strip()]
         if not lines:
             return ''
         if len(lines) == 1:
@@ -1567,7 +1575,8 @@ _LBRACE, _RBRACE = chr(0xe004), chr(0xe005)
 #   ( )           空括號清理（`f()` → `f`）
 #   [ ]           連結語法（mhchem 的 `->[MnO2]` 會變成 `->MnO2`，意思就變了）
 #   ' * = : ;     粗體標記（Python 的 `''` 空字串）、清單、標題、縮排、定義列表
-_VERBATIM_MASK = tuple(zip("{}|<#()[]'*=:;>", (chr(0xe004 + n) for n in range(15))))
+_VERBATIM_MASK = tuple(zip(
+    "{}|<#()[]'*=:;>", (chr(0xe004 + n) for n in range(15)), strict=True))
 _VMASK = dict(_VERBATIM_MASK)
 _VLT, _VGT = _VMASK['<'], _VMASK['>']
 # 程式碼多遮一層空白：縮排在 Python 裡是語法的一部分，而清理鏈為了收斂排版
@@ -1604,10 +1613,13 @@ _NOWIKI_RE = re.compile(r'(?is)<nowiki(?![\w.\-])[^>]*(?<!/)>(.{0,20000}?)</nowi
 # 展開模板與連結。把它當逐字區塊遮起來的話，`<code>{{le|SCHED_DEADLINE|…}}</code>`
 # 會以模板原文的形式流進資料集（Linux內核、Python、Emacs 都中招）。
 # 這裡只換成行內反引號保住「這是程式碼」的訊息，內容照常送去展開。
-_CODE_TAG_RE = re.compile(r'(?is)<code(?![\w.\-])[^>]*(?<!/)>(.{0,4000}?)</code\s*>')
+# `<code>` 是行內標籤，內容不應跨行。禁止跨行還能避免一個沒收尾的 `<code>`
+# 配到幾千字後另一個區塊的 `</code>`，把中間整篇條目都遮成逐字內容。
+_CODE_TAG_RE = re.compile(r'(?i)<code(?![\w.\-])[^>\n]*(?<!/)>([^\n]{0,4000}?)</code\s*>')
 # 「這段內容裡有沒有 wiki／HTML 標記」。刻意不含括號與冒號——那些在一般
 # 中文句子裡太常見，拿來判斷會把普通文字誤認成標記示範。
 _MARKUP_CHAR_RE = re.compile(r"[{}\[\]|<>*#=]|''")
+_ENTITY_LITERAL_RE = re.compile(r'&(?:#[xX]?[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);')
 _LANG_ATTR_RE = re.compile(r'(?i)\blang\s*=\s*["\']?([\w+#.-]{1,20})')
 
 
@@ -1668,8 +1680,15 @@ def _fence_code_blocks(s):
         # 加反引號等於憑空在句子中間插標記：`葡式蛋撻` 的「粵港澳稱葡`撻`」，
         # 而且只有繁體那一支有（簡體那一支沒包），繁簡兩版就此對不上。
         # 裡面根本沒有標記字元的，就是普通文字。
-        if not body or '`' in body or not _MARKUP_CHAR_RE.search(body):
+        if (not body or '`' in body
+                or not (_MARKUP_CHAR_RE.search(plain)
+                        or _ENTITY_LITERAL_RE.search(plain))):
             return body
+        # 多行 nowiki 是逐字區塊，不能用單反引號包。Markdown 的行內 code span
+        # 不得跨行，下游也只會把同一行的反引號內容視為逐字文字；舊寫法因此讓
+        # Nemerle 的 ASP.NET 範例重新暴露成 `<p>`／`<asp:Label>` 等 HTML 殘留。
+        if '\n' in body:
+            return f'\n```\n{body.strip(chr(10))}\n```\n'
         return f'`{body}`'
 
     # `<code><nowiki>…</nowiki></code>` 是常見的巢狀寫法，兩層各包一次會變成
@@ -1678,6 +1697,66 @@ def _fence_code_blocks(s):
     # 反過來的話兩層各包一次會變成雙層反引號。
     s = _NOWIKI_RE.sub(nowiki, s)
     return _CODE_TAG_RE.sub(_wrap_inline_code, s)
+
+
+def _wrap_indented_pre(s):
+    """先把 wikitext 行首空白區塊包成 `<pre>`，供逐字遮罩保護。
+
+    這一步必須在剩餘模板被移除之前做，否則程式碼的 `{{`／`}}` 或連續 `{}`
+    會被當成模板一起刪掉。模板與表格本身也常縮排行首參數，所以只在兩者的
+    配對深度都是零時辨認 preformatted text。
+    """
+    if not re.search(r'(?m)^[ \t]+\S', s):
+        return s
+    lines = s.split('\n')
+    out = []
+    index = 0
+    template_depth = table_depth = 0
+    in_fence = False
+
+    def update_depth(line):
+        nonlocal template_depth, table_depth, in_fence
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            if not in_fence or stripped == '```':
+                in_fence = not in_fence
+            return
+        if in_fence:
+            return
+        template_depth = max(
+            0, template_depth + line.count('{{') - line.count('}}'))
+        table_depth = max(0, table_depth + line.count('{|') - line.count('|}'))
+
+    while index < len(lines):
+        line = lines[index]
+        eligible = (not in_fence and template_depth == 0 and table_depth == 0
+                    and bool(line.strip()) and line.startswith((' ', '\t')))
+        if not eligible:
+            out.append(line)
+            update_depth(line)
+            index += 1
+            continue
+
+        block = []
+        while index < len(lines):
+            current = lines[index]
+            if current.startswith((' ', '\t')) and current.strip():
+                block.append(current[1:])
+                index += 1
+                continue
+            if not current.strip():
+                lookahead = index + 1
+                while lookahead < len(lines) and not lines[lookahead].strip():
+                    lookahead += 1
+                if (lookahead < len(lines)
+                        and lines[lookahead].startswith((' ', '\t'))
+                        and lines[lookahead].strip()):
+                    block.extend([''] * (lookahead - index))
+                    index = lookahead
+                    continue
+            break
+        out.extend(('<pre>', *block, '</pre>'))
+    return '\n'.join(out)
 
 
 def _mask_verbatim_braces(s):
@@ -1873,9 +1952,18 @@ _MATH_DISPLAY_ATTR_RE = re.compile(r'(?i)display\s*=\s*["\']?block')
 
 def _keep_math(match):
     """保留公式的 LaTeX 原始碼，去掉標籤，補上 $ 或 $$ 分隔符"""
-    body = re.sub(r'\s+', ' ', match.group(2) or '').strip()
+    body = re.sub(
+        r'(?i)</?(?:pre|code)\b[^>]*>', ' ', match.group(2) or '')
+    body = re.sub(r'\s+', ' ', body).strip()
     if not body:
         return ''
+    # 維基來源偶爾在 <math> 末尾留下單一反斜線。若緊接著補 `$`，
+    # Markdown 會把那個結尾分隔符當成 `\$` 字面字元，這條公式與後面所有
+    # 公式都會配對錯位。保留反斜線，只加一個空白把它和分隔符隔開；
+    # TeX 中的 `\ ` 本來就是合法空白，不會改變公式的數值。
+    trailing_slashes = len(body) - len(body.rstrip('\\'))
+    if trailing_slashes % 2:
+        body += ' '
     text = match.string
     line_start = text.rfind('\n', 0, match.start()) + 1
     line_end = text.find('\n', match.end())
@@ -1969,7 +2057,8 @@ def _collapse_blank_lines(s):
 
 
 # gap 裡這些東西到最後都會消失，判斷公式是否相鄰時要先扣掉
-_VANISHING_GAP_RE = re.compile(r"(?s)''+|<!--.*?-->|&nbsp;|[ \t]+$")
+_VANISHING_GAP_RE = re.compile(
+    r"(?is)''+|<!--.*?-->|&nbsp;|<br\s*/?>|[ \t]+$")
 
 
 def _keep_math_all(s):
@@ -2011,11 +2100,47 @@ _SAFE_EXPR_RE = re.compile(r'[\d\s+\-*/().]{1,200}')
 
 def _eval_expr(expr):
     expr = expr.strip()
-    if not _SAFE_EXPR_RE.fullmatch(expr):
+    # MediaWiki #expr 不使用 Python 的 `**`／`//`。若放行 `9**999…`，即使
+    # 沒有 builtins，也能讓單一惡意頁面耗盡 CPU／記憶體。
+    if not _SAFE_EXPR_RE.fullmatch(expr) or '**' in expr or '//' in expr:
         return ''
     try:
-        value = eval(expr, {'__builtins__': {}}, {})       # noqa: S307 - 字元集已限制
-    except Exception:
+        tree = ast.parse(expr, mode='eval')
+        operations = 0
+
+        def calculate(node):
+            nonlocal operations
+            operations += 1
+            if operations > 64:
+                raise ValueError('運算式過於複雜')
+            if isinstance(node, ast.Expression):
+                return calculate(node.body)
+            if (isinstance(node, ast.Constant)
+                    and type(node.value) in (int, float)):
+                value = node.value
+            elif isinstance(node, ast.UnaryOp) and isinstance(
+                    node.op, (ast.UAdd, ast.USub)):
+                operand = calculate(node.operand)
+                value = operand if isinstance(node.op, ast.UAdd) else -operand
+            elif isinstance(node, ast.BinOp) and isinstance(
+                    node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+                left, right = calculate(node.left), calculate(node.right)
+                if isinstance(node.op, ast.Add):
+                    value = left + right
+                elif isinstance(node.op, ast.Sub):
+                    value = left - right
+                elif isinstance(node.op, ast.Mult):
+                    value = left * right
+                else:
+                    value = left / right
+            else:
+                raise ValueError('不支援的運算')
+            if abs(value) > 1e100:
+                raise ValueError('運算結果過大')
+            return value
+
+        value = calculate(tree)
+    except (ArithmeticError, SyntaxError, TypeError, ValueError):
         return ''
     if isinstance(value, float) and value.is_integer():
         value = int(value)
@@ -2065,7 +2190,7 @@ def expand_inline_templates(text, passes=8):
     for _ in range(passes):
         current = text
 
-        def repl(m):
+        def repl(m, current=current):
             # 找所在行的頭尾要設搜尋窗。`rfind('\n', 0, m.start())` 是從模板位置
             # 一路往回掃到檔頭——O(位置)，而一頁有數千個模板、要跑 8 輪，整體
             # 變成 O(n²)。《Pokémon GO》單篇因此卡住一個 worker 超過 9 分鐘。
@@ -2200,11 +2325,11 @@ def _resolve_variant(body):
 
 class WIKIParse(object):
 
-    KEYWORDS = [
+    KEYWORDS = (
         'Template', 'Category', 'Wikipedia',
         'File', 'Topic', 'Portal',
         'MediaWiki', '模块', 'Draft', 'Help'
-    ]
+    )
     
     def __init__(self, input_file, markdown=False):
         try:
@@ -2318,6 +2443,11 @@ class WIKIParse(object):
         # 只在展開前挑的話那些標記會原封不動流進正文——`桃花源` 的
         # 「桃花源記旁證-{zh-cn:》; zh-tw:〉; zh-hk:》;}-」出現了 9 次。
         s = self.__clean_synonym(s)
+        # 行首空白是 MediaWiki 的 preformatted text 語法。先包成 `<pre>`，再走
+        # 同一套逐字遮罩與圍欄轉換，保護程式碼裡的括號、模板字樣與縮排。
+        s = _wrap_indented_pre(s)
+        s = _mask_verbatim_braces(s)
+        s = _fence_code_blocks(s)
         # 表格轉成文字列（要在下面的表格移除規則之前做，否則資料會整塊消失）
         s = convert_tables(s)
         s = self.__clean_template(s)
@@ -2446,6 +2576,10 @@ class WIKIParse(object):
                 code_lines.update(range(opener, idx + 1))
                 code_close.add(idx)
                 opener = None
+            elif stripped.startswith('```'):
+                # 開啟後又遇到帶語言的開啟標記，代表前一個標記配不到收尾。
+                # 以新的標記重新開始，不能讓孤立圍欄吞掉下一個完整程式區塊。
+                opener = idx
         for index, line in enumerate(lines):
             item_line = False
             # 只有圖片位置標記的行：用單一換行，不要打斷前後的清單。

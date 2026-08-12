@@ -6,9 +6,9 @@
 
 ### 回報方式
 
-請發送電子郵件至：[在此填入你的聯絡方式]
-
-電子郵件標題格式：`[Security Vulnerability] <簡短描述>`
+請使用 GitHub 的
+[私密安全性通報](https://github.com/YuhuanStudio/WikiZH_Dataset/security/advisories/new)。
+這個管道只會讓專案維護者看到內容，請勿先建立公開 Issue。
 
 ### 回報內容應包含
 
@@ -52,14 +52,10 @@
 
 ## 依賴套件
 
-本專案使用以下主要依賴套件：
-
-- `requests` - HTTP 請求
-- `opencc` - 繁簡轉換
-- `gensim` - 文本處理
-- `bz2file` - BZ2 檔案處理
-- `tqdm` - 進度條
-- `pangu` - 文本間距處理
+現行流程的直接依賴以 [`requirements.txt`](requirements.txt) 為準，主要包括
+`gensim`、`pyarrow`、`tqdm`、`huggingface_hub`，以及只在下載圖片時使用的
+`requests`。繁簡轉換與 BZ2 解壓已改用專案內的轉換表及 Python 標準庫；
+`opencc`、`bz2file`、`pangu` 均不是現行流程的直接依賴。
 
 我們會定期審查和更新這些套件以確保安全性。
 

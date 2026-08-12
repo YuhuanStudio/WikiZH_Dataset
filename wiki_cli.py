@@ -17,11 +17,12 @@
 - 上傳到 Hugging Face
 """
 
-import os
-import sys
 import argparse
-import shutil
 import importlib.util
+import os
+import re
+import shutil
+import sys
 
 
 # 必要的第三方套件：{import 名稱: pip 安裝名稱}
@@ -31,14 +32,13 @@ REQUIRED_PACKAGES = {
     'tqdm': 'tqdm',
     'pyarrow': 'pyarrow',
     'huggingface_hub': 'huggingface_hub',
+    'requests': 'requests',
 }
 
 # 只有特定任務才需要的套件。列進上面那張表的話，不做該任務的人也會被擋下來——
 # `pangu` 早就移除了（排版空格是不可逆的有損轉換），`requests` 只有「下載圖片」
 # 用得到，卻讓「上傳資料集」也無法執行。
-OPTIONAL_PACKAGES = {
-    'download_images': {'requests': 'requests'},
-}
+OPTIONAL_PACKAGES = {'download_images': {'requests': 'requests'}}
 
 
 # 本地資料保留幾個月份（當月 + 上個月）
@@ -56,7 +56,7 @@ def check_optional(task):
         sys.exit(1)
 
 
-def check_dependencies():
+def check_dependencies(required=None):
     """執行前檢查所有必要的 pip 套件是否已安裝且可正常匯入。
 
     避免在下載／轉換等耗時步驟跑到一半才因缺少套件而失敗。
@@ -69,7 +69,10 @@ def check_dependencies():
     missing = []  # 完全沒安裝
     broken = []   # 有安裝但匯入失敗（例如版本不相容或缺少系統依賴）
 
-    for import_name, pip_name in REQUIRED_PACKAGES.items():
+    package_names = set(REQUIRED_PACKAGES if required is None else required)
+    packages = ((name, pip) for name, pip in REQUIRED_PACKAGES.items()
+                if name in package_names)
+    for import_name, pip_name in packages:
         if importlib.util.find_spec(import_name) is None:
             print(f"  ✗ {import_name:<10} (未安裝)")
             missing.append(pip_name)
@@ -183,16 +186,17 @@ class WikiCLI:
         return os.path.basename(os.path.dirname(xml_path))
 
     def _get_latest_md_dir(self):
-        """獲取最新的中間層目錄"""
+        """獲取最新且完整的中間層目錄。"""
         if not os.path.exists(self.md_dir):
             return None
 
         # 查找所有符合 YYYYMM 格式的目錄
         month_dirs = []
         for item in os.listdir(self.md_dir):
-            if os.path.isdir(os.path.join(self.md_dir, item)):
-                if len(item) == 6 and item.isdigit():
-                    month_dirs.append(item)
+            path = os.path.join(self.md_dir, item)
+            if (os.path.isdir(path) and len(item) == 6 and item.isdigit()
+                    and self._md_dir_is_ready(path)):
+                month_dirs.append(item)
 
         if not month_dirs:
             return None
@@ -200,6 +204,20 @@ class WikiCLI:
         # 返回最新的月份目錄
         latest_month = max(month_dirs)
         return os.path.join(self.md_dir, latest_month)
+
+    def _matching_md_dir(self, xml_path):
+        """以 dump 日期找同月份的完整中間層，避免混用其他快照。"""
+        if not xml_path:
+            return None
+        probes = (os.path.basename(os.path.dirname(xml_path)),
+                  os.path.basename(xml_path))
+        for probe in probes:
+            match = re.search(r'(?<!\d)(\d{8})(?!\d)', probe)
+            if not match:
+                continue
+            candidate = os.path.join(self.md_dir, match.group(1)[:6])
+            return candidate if self._md_dir_is_ready(candidate) else None
+        return None
 
     def _get_latest_xml_file(self):
         """獲取最新的 XML 文件"""
@@ -216,14 +234,12 @@ class WikiCLI:
         if not date_dirs:
             return None
 
-        # 返回最新日期的 XML 文件
-        latest_date = max(date_dirs)
-        date_dir = os.path.join(self.download_dir, latest_date)
-
-        # 查找 .xml.bz2 文件
-        for file in os.listdir(date_dir):
-            if file.endswith('.xml.bz2'):
-                return os.path.join(date_dir, file)
+        # 最新目錄可能只是中斷下載留下的空殼；由新到舊找第一個完整檔名。
+        for latest_date in sorted(date_dirs, reverse=True):
+            date_dir = os.path.join(self.download_dir, latest_date)
+            for file in sorted(os.listdir(date_dir)):
+                if file.endswith('.xml.bz2'):
+                    return os.path.join(date_dir, file)
 
         return None
 
@@ -262,7 +278,8 @@ class WikiCLI:
 
         return is_complete(path)
 
-    def convert_to_md(self, xml_path=None, latest_date=None, force=False):
+    def convert_to_md(self, xml_path=None, latest_date=None, force=False,
+                      fetch_wikidata=True):
         """將 XML 解析成中間層（分片 JSONL）"""
         if xml_path is None:
             xml_path = self._get_latest_xml_file()
@@ -274,6 +291,9 @@ class WikiCLI:
             # 從路徑提取日期
             xml_dir = os.path.dirname(xml_path)
             latest_date = os.path.basename(xml_dir)
+        if not re.fullmatch(r'\d{8}', str(latest_date)):
+            print(f"✗ dump 日期格式錯誤（需為 YYYYMMDD）: {latest_date!r}")
+            return None
 
         print("\n" + "=" * 60)
         print("步驟 2/2: 解析 XML（產生語言中立的中間層）")
@@ -293,14 +313,33 @@ class WikiCLI:
             # 創建新的輸出目錄
             self._ensure_dir(output_dir_with_month)
 
-            # 只保留當月與上個月的中間層，更舊的清掉
-            self._prune_old_versions(self.md_dir)
+            # 正式輸出宣稱會補回 {{wikidata|...}} 的值；舊流程只在 QA 手動建表，
+            # 全新月份跑 CLI 反而會帶著空值繼續。第一次解析該月份時自動建立。
+            if fetch_wikidata:
+                import json
+                import wikidata_store
+
+                if not wikidata_store.load(output_dir_with_month):
+                    print("建立 Wikidata 動態欄位快取…", flush=True)
+                    need = wikidata_store.scan(xml_path)
+                    need_path = os.path.join(
+                        output_dir_with_month, 'wikidata_need.json')
+                    with open(need_path, 'w', encoding='utf-8') as f:
+                        json.dump(need, f, ensure_ascii=False)
+                    wikidata_store.fetch(need, output_dir_with_month)
+            else:
+                print("⚠ 已略過 Wikidata 快取；動態取值欄位可能留空", flush=True)
 
             # 使用 WIKIParse2Doc 類解析並生成文件
             from md_converter import WIKIParse2Doc
 
             parser = WIKIParse2Doc(xml_path, output_dir_with_month, markdown=True)
             md_count = parser.run(num=None)
+
+            # parser.run 的回傳值本身不足以證明中間層完整；完成標記、分片與
+            # 失敗報告必須共同通過檢查，才可進入後續生成與舊月份清理。
+            if not self._md_dir_is_ready(output_dir_with_month):
+                raise RuntimeError('解析結束但中間層未通過完整性檢查')
 
             from page_store import shard_paths
 
@@ -310,6 +349,9 @@ class WikiCLI:
             print(f"  解析條目數: {md_count:,}")
             print(f"  分片數: {len(shard_paths(output_dir_with_month))}")
             print("=" * 60)
+
+            # 成功寫下完成標記後才刪舊月份；失敗時仍保有最近的可用資料。
+            self._prune_old_versions(self.md_dir)
 
             return output_dir_with_month
         except Exception as e:
@@ -331,19 +373,14 @@ class WikiCLI:
         print("=" * 60)
 
         try:
-            from hf_uploader import PRETRAIN_FILE_RE
             from md_to_dataset import process_directory_variants
 
             output_dirs = {}
             for lang in ('tw', 'cn'):
                 sub = WikiCLI(lang=lang)
                 sub._ensure_dir(sub.json_dir)
-                sub._clean_stale_outputs(PRETRAIN_FILE_RE)
                 omni_dir = os.path.join(sub.json_dir, 'omni')
                 sub._ensure_dir(omni_dir)
-                for name in os.listdir(omni_dir):
-                    if name.endswith('.parquet'):
-                        os.remove(os.path.join(omni_dir, name))
                 output_dirs[lang] = sub.json_dir
 
             result = process_directory_variants(input_dir=input_dir,
@@ -422,7 +459,8 @@ class WikiCLI:
             traceback.print_exc()
             return None
 
-    def extract_images(self, xml_path=None, output_file=None, max_images=None):
+    def extract_images(self, xml_path=None, output_file=None, max_images=None,
+                       page_dir=None):
         """從 XML 提取圖片資訊"""
         if xml_path is None:
             xml_path = self._get_latest_xml_file()
@@ -441,14 +479,17 @@ class WikiCLI:
         print(f"輸出文件: {output_file}")
         print(f"語言版本: {'繁體中文' if self.lang == 'tw' else '簡體中文'}")
 
+        guard_page_dir = (page_dir if page_dir is not None
+                          else self._matching_md_dir(xml_path))
+        if guard_page_dir:
+            print(f"詞邊界中間層: {guard_page_dir}")
+
         try:
-            from hf_uploader import IMAGE_FILE_RE
             from image_extractor import extract_wiki_images
 
-            # 先清掉上一次生成的圖片 JSONL，避免新舊版本混在一起
-            self._clean_stale_outputs(IMAGE_FILE_RE)
-
-            extract_wiki_images(xml_path, output_file, max_images=max_images, lang=self.lang)
+            extract_wiki_images(
+                xml_path, output_file, max_images=max_images, lang=self.lang,
+                page_dir=guard_page_dir)
 
             # image_extractor 一律以 <base>_<序號>.jsonl 命名，
             # 沒有被分割時改回不帶序號的正式檔名（與 Hugging Face 上的檔名一致）
@@ -464,6 +505,42 @@ class WikiCLI:
             import traceback
             traceback.print_exc()
             return None
+
+    @staticmethod
+    def _clean_image_output_path(output_file):
+        """清掉同一圖片輸出的舊單檔與 ``_N`` 分片。"""
+        base, ext = os.path.splitext(output_file)
+        directory = os.path.dirname(output_file) or '.'
+        stem = os.path.basename(base)
+        pattern = re.compile(rf'^{re.escape(stem)}(?:_\d+)?{re.escape(ext)}$')
+        if not os.path.isdir(directory):
+            return
+        for name in os.listdir(directory):
+            if pattern.match(name):
+                os.remove(os.path.join(directory, name))
+
+    def extract_image_variants(self, xml_path, max_images=None, page_dir=None):
+        """單次掃描 dump，同時生成繁／簡圖片資料集。"""
+        from image_extractor import extract_wiki_images_variants
+
+        guard_page_dir = (page_dir if page_dir is not None
+                          else self._matching_md_dir(xml_path))
+
+        outputs = {}
+        for lang in ('tw', 'cn'):
+            sub = WikiCLI(lang=lang)
+            sub._ensure_dir(sub.json_dir)
+            path = sub._image_output_file()
+            outputs[lang] = path
+
+        totals = extract_wiki_images_variants(
+            xml_path, outputs, max_images=max_images,
+            page_dir=guard_page_dir)
+        normalized = {
+            lang: WikiCLI(lang=lang)._normalize_image_output(path)
+            for lang, path in outputs.items()
+        }
+        return normalized, totals
 
     def _normalize_image_output(self, output_file):
         """把 image_extractor 產出的 <base>_1.jsonl 改名成 <base>.jsonl（未被分割時）"""
@@ -526,20 +603,24 @@ class WikiCLI:
             check_optional('download_images')
             from image_downloader import download_images_from_jsonl
 
-            download_images_from_jsonl(jsonl_path, output_dir)
+            failed = download_images_from_jsonl(jsonl_path, output_dir)
 
             print("\n" + "=" * 60)
-            print("✓ 完成！")
+            if failed:
+                print(f"⚠ 完成，但有 {len(failed):,} 筆失敗")
+            else:
+                print("✓ 完成！")
             print("=" * 60)
 
-            return output_dir
+            return None if failed else output_dir
         except Exception as e:
             print(f"✗ 下載失敗: {e}")
             import traceback
             traceback.print_exc()
             return None
 
-    def run_task(self, task='text'):
+    def run_task(self, task='text', force_md=False, max_images=None,
+                 fetch_wikidata=True):
         """執行指定的獨立任務
 
         Args:
@@ -561,15 +642,18 @@ class WikiCLI:
             # 步驟 1: 下載
             xml_path, latest_date = self.download_wiki()
             if xml_path is None:
-                return
+                return False
 
             # 步驟 2: 解析成中間層
-            md_dir = self.convert_to_md(xml_path, latest_date)
+            md_dir = self.convert_to_md(
+                xml_path, latest_date, force=force_md,
+                fetch_wikidata=fetch_wikidata)
             if md_dir is None:
-                return
+                return False
 
             # 步驟 3: 轉換為文檔級 Parquet 資料集
-            self.convert_md_to_dataset(md_dir, dump_date=latest_date)
+            if self.convert_md_to_dataset(md_dir, dump_date=latest_date) is None:
+                return False
 
         elif task == 'image-dataset':
             # 圖片 Dataset 任務
@@ -580,10 +664,11 @@ class WikiCLI:
             # 步驟 1: 下載
             xml_path, latest_date = self.download_wiki()
             if xml_path is None:
-                return
+                return False
 
             # 步驟 2: 提取圖片資訊
-            self.extract_images(xml_path)
+            if self.extract_images(xml_path, max_images=max_images) is None:
+                return False
 
         elif task == 'download-images':
             # 下載圖片任務
@@ -592,15 +677,17 @@ class WikiCLI:
             print()
 
             # 下載圖片
-            self.download_images()
+            if self.download_images() is None:
+                return False
 
         else:
             print(f"✗ 未知的任務類型: {task}")
-            return
+            return False
 
         print("\n" + "=" * 60)
         print("✓ 任務完成！")
         print("=" * 60)
+        return True
 
 
 def main():
@@ -656,9 +743,10 @@ Hugging Face 上傳：
     parser.add_argument('--to-pretrain', action='store_true', help='由中間層生成文檔級 Parquet 資料集')
     parser.add_argument('--extract-images', action='store_true', help='從 XML 提取圖片資訊')
     parser.add_argument('--download-images', action='store_true', help='下載圖片')
-    parser.add_argument('--generate-all', action='store_true', help='一次生成繁體、簡體與圖片資訊（不含下載）')
+    parser.add_argument('--generate-all', action='store_true',
+                        help='下載 dump 並生成繁體、簡體與圖片資訊（不下載圖片檔）')
 
-    #（已移除舊版相容參數及 skip-* 選項，介面已簡化）
+    # 舊版相容參數已移除；保留的 skip 選項各自只略過一項明確檢查。
 
     # 語言參數
     parser.add_argument('--lang', type=str, choices=['tw', 'cn'], default='tw',
@@ -667,10 +755,10 @@ Hugging Face 上傳：
     # 路徑參數
     parser.add_argument('--xml-path', type=str, help='指定 XML 文件路徑')
     parser.add_argument('--md-dir', type=str, help='指定中間層目錄路徑')
-    parser.add_argument('--json-file', type=str, help='指定 JSONL 輸出文件路徑')
     parser.add_argument('--image-json', type=str, help='指定圖片 JSONL 文件路徑')
     parser.add_argument('--image-dir', type=str, help='指定圖片輸出目錄')
-    parser.add_argument('--max-images', type=int, help='最大圖片數量（用於 --extract-images）')
+    parser.add_argument('--max-images', type=int,
+                        help='最大圖片數量（用於圖片資料集生成）')
 
     # Hugging Face 上傳參數
     parser.add_argument('--upload', action='store_true', help='將現有輸出上傳到 Hugging Face')
@@ -686,6 +774,8 @@ Hugging Face 上傳：
     parser.add_argument('--force-upload', action='store_true', help='上傳前檢查未通過時仍強制上傳')
 
     parser.add_argument('--force-md', action='store_true', help='即使該月份的中間層已存在也重新解析')
+    parser.add_argument('--skip-wikidata', action='store_true',
+                        help='解析時不建立 Wikidata 動態欄位快取（相關值可能留空）')
     parser.add_argument('--skip-check', action='store_true', help='跳過執行前的套件檢查')
 
     # 確保輸出使用 UTF-8，避免在 Windows GBK 主控台輸出 ✓／✗ 等字元時崩潰
@@ -697,9 +787,50 @@ Hugging Face 上傳：
 
     args = parser.parse_args()
 
-    # 執行前先確認所有必要套件皆已安裝且可用，避免跑到一半才失敗
+    # 完整任務彼此互斥；過去同時傳 --pretrain-dataset --upload 時會靜默只做上傳。
+    exclusive = {
+        '--pretrain-dataset': args.pretrain_dataset,
+        '--image-dataset': args.image_dataset,
+        '--download-images': args.download_images,
+        '--generate-all': args.generate_all,
+        '--upload': args.upload,
+    }
+    selected = [name for name, enabled in exclusive.items() if enabled]
+    if len(selected) > 1:
+        parser.error(f"以下完整任務不可同時指定: {', '.join(selected)}")
+    single_steps = {
+        '--download': args.download,
+        '--to-md': args.to_md,
+        '--to-pretrain': args.to_pretrain,
+        '--extract-images': args.extract_images,
+    }
+    selected_steps = [name for name, enabled in single_steps.items() if enabled]
+    if selected and selected_steps:
+        parser.error(
+            f"完整任務 {selected[0]} 不可與單步操作同時指定: "
+            f"{', '.join(selected_steps)}")
+
+    # 如果沒有指定任何操作，預設執行文字 Pretrain Dataset 任務。
+    if not any([args.pretrain_dataset, args.image_dataset, args.download,
+                args.to_md, args.to_pretrain, args.extract_images,
+                args.download_images, args.generate_all, args.upload]):
+        print("未指定任務，執行預設任務：生成文字 Pretrain Dataset\n")
+        args.pretrain_dataset = True
+
+    # 只檢查這次任務真正會用到的套件；單純下載 dump 不需要先安裝 HF SDK。
     if not args.skip_check:
-        check_dependencies()
+        required = set()
+        if args.pretrain_dataset or args.generate_all or args.to_md:
+            required.update(('gensim', 'tqdm'))
+        if args.pretrain_dataset or args.generate_all or args.to_pretrain:
+            required.update(('pyarrow', 'tqdm'))
+        if args.image_dataset or args.generate_all or args.extract_images:
+            required.update(('gensim', 'tqdm'))
+        if args.download_images:
+            required.update(('requests', 'tqdm'))
+        if args.upload or (args.generate_all and not args.no_upload):
+            required.update(('huggingface_hub', 'pyarrow'))
+        check_dependencies(required)
 
     cli = WikiCLI(lang=args.lang)
 
@@ -714,22 +845,16 @@ Hugging Face 上傳：
         force=args.force_upload,
     )
 
-    # 如果沒有指定任何操作，預設執行文字 Pretrain Dataset 任務
-    if not any([args.pretrain_dataset, args.image_dataset, args.download, args.to_md, args.to_pretrain,
-                args.extract_images, args.download_images, args.generate_all, args.upload]):
-        print("未指定任務，執行預設任務：生成文字 Pretrain Dataset\n")
-        args.pretrain_dataset = True
-
     try:
         # 只上傳，不重新生成
-        if args.upload and not args.generate_all:
+        if args.upload:
             ok = cli.upload_to_hf(dump_date=args.dump_date, **upload_kwargs)
             sys.exit(0 if ok else 1)
 
         # 執行獨立任務
         if args.generate_all:
             # 一次性生成：下載 → 轉 MD → 為 tw/cn 各自生成 Parquet → 提取圖片資訊 → 上傳 HF
-            print("任務：一次生成繁體、簡體與圖片資訊（不含下載）")
+            print("任務：下載 dump 並生成繁體、簡體與圖片資訊（不下載圖片檔）")
 
             # 生成要跑好幾個小時，先確認 HF 認證與權限沒問題，避免最後一步才失敗
             if not args.no_upload:
@@ -743,12 +868,14 @@ Hugging Face 上傳：
             # 下載一次 XML
             xml_path, latest_date = cli.download_wiki()
             if xml_path is None:
-                return
+                sys.exit(1)
 
             # 解析成中間層（僅需執行一次，tw/cn 共用）
-            md_dir = cli.convert_to_md(xml_path, latest_date, force=args.force_md)
+            md_dir = cli.convert_to_md(
+                xml_path, latest_date, force=args.force_md,
+                fetch_wikidata=not args.skip_wikidata)
             if md_dir is None:
-                return
+                sys.exit(1)
 
             # 四組資料集（tw/cn × 純文字/omni）一次走完中間層。逐語言各跑一次的話
             # 同一頁要重複組裝四次，而繁簡兩版的差別只在字體。
@@ -756,12 +883,13 @@ Hugging Face 上傳：
                 print("✗ Parquet 資料集生成失敗，中止流程")
                 sys.exit(1)
 
-            # 圖片資訊仍逐語言抽（圖說要各自轉換）
-            for lang in ["tw", "cn"]:
-                print(f"\n-- 提取圖片資訊: {lang} --")
-                if WikiCLI(lang=lang).extract_images(xml_path=xml_path) is None:
-                    print(f"✗ {lang} 的圖片資訊提取失敗，中止流程")
-                    sys.exit(1)
+            # 圖片定位與 XML 解壓只做一次；繁簡圖說在同一次走訪中分流。
+            try:
+                cli.extract_image_variants(
+                    xml_path, max_images=args.max_images, page_dir=md_dir)
+            except Exception as e:
+                print(f"✗ 圖片資訊提取失敗，中止流程: {e}")
+                sys.exit(1)
 
             print("\n" + "=" * 60)
             print("✓ generate-all 生成完成！")
@@ -777,24 +905,47 @@ Hugging Face 上傳：
             sys.exit(0 if ok else 1)
 
         if args.pretrain_dataset:
-            cli.run_task('text')
+            ok = cli.run_task(
+                'text', force_md=args.force_md,
+                fetch_wikidata=not args.skip_wikidata)
+            sys.exit(0 if ok else 1)
         elif args.image_dataset:
-            cli.run_task('image-dataset')
+            ok = cli.run_task('image-dataset', max_images=args.max_images)
+            sys.exit(0 if ok else 1)
         elif args.download_images:
-            cli.download_images()
+            ok = cli.download_images(jsonl_path=args.image_json,
+                                     output_dir=args.image_dir)
+            sys.exit(0 if ok else 1)
         else:
             # 單獨步驟（進階功能）
+            ok = True
+            step_xml_path = args.xml_path
+            step_md_dir = args.md_dir
+            step_dump_date = args.dump_date
             if args.download:
-                cli.download_wiki()
+                step_xml_path, downloaded_date = cli.download_wiki()
+                step_dump_date = step_dump_date or downloaded_date
+                ok = ok and step_xml_path is not None
 
-            if args.to_md:
-                cli.convert_to_md(xml_path=args.xml_path, force=args.force_md)
+            if ok and args.to_md:
+                result = cli.convert_to_md(
+                    xml_path=step_xml_path, force=args.force_md,
+                    fetch_wikidata=not args.skip_wikidata)
+                ok = ok and result is not None
+                if result is not None:
+                    step_md_dir = result
 
-            if args.to_pretrain:
-                cli.convert_md_to_dataset(input_dir=args.md_dir, dump_date=args.dump_date)
+            if ok and args.to_pretrain:
+                result = cli.convert_md_to_dataset(
+                    input_dir=step_md_dir, dump_date=step_dump_date)
+                ok = ok and result is not None
 
-            if args.extract_images:
-                cli.extract_images(xml_path=args.xml_path, output_file=args.image_json, max_images=args.max_images)
+            if ok and args.extract_images:
+                result = cli.extract_images(
+                    xml_path=step_xml_path, output_file=args.image_json,
+                    max_images=args.max_images, page_dir=step_md_dir)
+                ok = ok and result is not None
+            sys.exit(0 if ok else 1)
 
     except KeyboardInterrupt:
         print("\n\n⚠ 用戶中斷操作")

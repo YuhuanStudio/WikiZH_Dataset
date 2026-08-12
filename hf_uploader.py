@@ -49,6 +49,18 @@ IMAGE_REPO_FILENAME = {
 PRETRAIN_FILE_RE = re.compile(r'^(?:wiki_pretrain_part\d+\.json|train-\d{5}-of-\d{5}\.parquet)$')
 IMAGE_FILE_RE = re.compile(r'^wiki_images_dataset(_CN)?(_\d+)?\.jsonl$')
 
+
+def _image_file_pattern(langs):
+    """Return a root-file pattern limited to the selected image languages."""
+    alternatives = []
+    for lang in sorted(set(langs)):
+        base, ext = os.path.splitext(IMAGE_REPO_FILENAME[lang])
+        alternatives.append(
+            rf'{re.escape(base)}(?:_\d+)?{re.escape(ext)}')
+    if not alternatives:
+        return re.compile(r'(?!)')
+    return re.compile(rf'^(?:{"|".join(alternatives)})$')
+
 # ============================================================
 # Dataset card（HF 上的 README）
 #
@@ -515,13 +527,21 @@ def dump_date_to_version(dump_date):
     dump_date = str(dump_date)
     if len(dump_date) != 8 or not dump_date.isdigit():
         raise ValueError(f"dump 日期格式錯誤（需為 YYYYMMDD）: {dump_date}")
+    try:
+        datetime.strptime(dump_date, '%Y%m%d')
+    except ValueError as exc:
+        raise ValueError(f"dump 日期不是有效日期: {dump_date}") from exc
     return dump_date[2:6]
 
 
 def shift_month(version, delta):
     """月份版本號加減月份：('2608', -1) -> '2607'，('2612', 1) -> '2701'"""
+    if not re.fullmatch(r'\d{4}', str(version)):
+        raise ValueError(f'月份版本格式錯誤（需為 YYMM）: {version!r}')
     year = int(version[:2])
     month = int(version[2:])
+    if not 1 <= month <= 12:
+        raise ValueError(f'月份版本含無效月份: {version!r}')
     total = year * 12 + (month - 1) + delta
     return f"{total // 12 % 100:02d}{total % 12 + 1:02d}"
 
@@ -661,10 +681,10 @@ def _conversion_drift(texts, mode):
         if len(converted) != len(text):
             # 長度不同時無法逐字比對，以整段視為差異
             total += len(text)
-            diff += abs(len(converted) - len(text))
+            diff += len(text)
             continue
         total += len(text)
-        diff += sum(1 for a, b in zip(text, converted) if a != b)
+        diff += sum(1 for a, b in zip(text, converted, strict=True) if a != b)
     if total == 0:
         return None
     return diff / total
@@ -731,7 +751,6 @@ def check_pretrain_files(files, lang, prev_total_size=None, columns=None, label=
 
     total_size = 0
     total_rows = 0
-    total_chars = 0
     samples = []
 
     for path in sorted(files):
@@ -756,17 +775,30 @@ def check_pretrain_files(files, lang, prev_total_size=None, columns=None, label=
             result.error(f'{name} 沒有任何記錄')
             continue
 
-        # 讀第一個 row group 就夠做內容抽查，不必載入整個分片
-        batch = pf.read_row_group(0).to_pylist()
-        for r in batch[:200]:
-            if not r.get('text') or not r.get('title'):
-                result.error(f'{name} 有記錄的 title/text 為空')
-                break
-            if not str(r.get('url', '')).startswith('https://zh.wikipedia.org/'):
-                result.error(f"{name} 的 url 欄位不正確: {r.get('url')!r}")
-                break
-        samples.extend(batch[:200])
-        total_chars += sum(len(r['text']) for r in batch)
+        # 每片讀首／中／尾 row group。只讀第一組抓不到後半截損壞或空欄位。
+        group_indexes = sorted({0, pf.num_row_groups // 2, pf.num_row_groups - 1})
+        for group_index in group_indexes:
+            try:
+                batch = pf.read_row_group(group_index).to_pylist()
+            except Exception as e:
+                result.error(f'{name} 的 row group {group_index} 無法讀取: {e}')
+                continue
+            for r in batch[:200]:
+                if not r.get('text') or not r.get('title'):
+                    result.error(
+                        f'{name} row group {group_index} 有 title/text 為空')
+                    break
+                if not str(r.get('url', '')).startswith(
+                        'https://zh.wikipedia.org/wiki/'):
+                    result.error(f"{name} 的 url 欄位不正確: {r.get('url')!r}")
+                    break
+                if 'images' in columns:
+                    images = r.get('images') or []
+                    if r['text'].count('<image>') != len(images):
+                        result.error(
+                            f'{name} row group {group_index} 的圖片佔位符與陣列不符')
+                        break
+            samples.extend(batch[:200])
 
     result.info(f"總大小: {_human_size(total_size)}｜{total_rows:,} 篇條目")
 
@@ -818,28 +850,46 @@ def check_image_file(path, lang, prev_size=None):
         result.error(f'檔案只有 {_human_size(size)}，明顯過小')
         return result
 
-    required = ('url', 'file_name', 'caption', 'alt', 'page', 'page_id', 'page_url')
+    required = ('url', 'file_name', 'caption', 'alt', 'page', 'page_id',
+                'page_url', 'section')
     samples = []
     line_count = 0
+    invalid_json = 0
+    missing_fields = 0
+    invalid_urls = 0
+    empty_text = 0
+    first_invalid = None
     with open(path, 'r', encoding='utf-8') as f:
         for i, line in enumerate(f):
             line_count += 1
+            line = line.strip()
+            try:
+                obj = json.loads(line)
+            except ValueError as e:
+                invalid_json += 1
+                first_invalid = first_invalid or f'第 {i + 1} 行: {e}'
+                continue
+            missing = [k for k in required if k not in obj]
+            if missing:
+                missing_fields += 1
+                first_invalid = first_invalid or f'第 {i + 1} 行缺少 {missing}'
+            if not str(obj.get('url', '')).startswith(
+                    'https://zh.wikipedia.org/wiki/Special:FilePath/'):
+                invalid_urls += 1
+            if not obj.get('caption') and not obj.get('alt'):
+                empty_text += 1
             if i < 200:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except ValueError as e:
-                    result.error(f'第 {i + 1} 行不是合法 JSON: {e}')
-                    break
-                missing = [k for k in required if k not in obj]
-                if missing:
-                    result.error(f'第 {i + 1} 行缺少欄位: {missing}')
-                    break
                 samples.append(obj)
 
     result.info(f"資料筆數: {line_count:,}")
+    if invalid_json:
+        result.error(f'{invalid_json:,} 行不是合法 JSON（首筆：{first_invalid}）')
+    if missing_fields:
+        result.error(f'{missing_fields:,} 行缺少必要欄位（首筆：{first_invalid}）')
+    if invalid_urls:
+        result.error(f'{invalid_urls:,} 行的圖片 URL 不合法')
+    if empty_text:
+        result.error(f'{empty_text:,} 行的 caption 與 alt 都是空字串')
 
     # 最後一行必須是完整 JSON，確認檔案沒被寫到一半就中斷
     tail = _read_tail(path).decode('utf-8', errors='ignore').strip().split('\n')[-1]
@@ -970,8 +1020,11 @@ class HFUploader:
             return None
 
         try:
+            revision = self.api.repo_info(
+                repo_id, repo_type='dataset').sha
             local = hf_hub_download(
                 repo_id, path, repo_type='dataset', token=self.token,
+                revision=revision,
                 force_download=True,  # 避免讀到過期的本地快取
             )
         except (EntryNotFoundError, RepositoryNotFoundError):
@@ -1252,7 +1305,7 @@ class HFUploader:
 
         self.api.create_commit(
             repo_id, repo_type='dataset', operations=ops,
-            commit_message=f'feat: update dataset to {version} (wiki dump {dump_date})',
+            commit_message=f'feat: publish dataset {version} (wiki dump {dump_date})',
         )
         self._tree_cache.pop(repo_id, None)
         print(f"  ✓ 上傳完成: https://huggingface.co/datasets/{repo_id}")
@@ -1269,8 +1322,11 @@ class HFUploader:
 
         if archive and not is_new:
             archive_version = archive_as or self.detect_archive_version(repo_id, version, PRETRAIN_FILE_RE)
-            if archive_version >= version:
-                print(f"  ⚠ 推算出的歸檔月份 {archive_version} 不早於新版本 {version}，略過歸檔")
+            if archive_version > version:
+                raise RuntimeError(
+                    f'拒絕以 {version} 覆寫較新的 root 版本 {archive_version}')
+            if archive_version == version:
+                print(f"  root 已是 {version}，同月更新略過歸檔")
             else:
                 self.archive_root(repo_id, archive_version, PRETRAIN_FILE_RE)
 
@@ -1291,8 +1347,11 @@ class HFUploader:
         if archive and not is_new:
             archive_version = archive_as or self.detect_archive_version(
                 repo_id, version, PRETRAIN_FILE_RE)
-            if archive_version >= version:
-                print(f"  ⚠ 推算出的歸檔月份 {archive_version} 不早於新版本 {version}，略過歸檔")
+            if archive_version > version:
+                raise RuntimeError(
+                    f'拒絕以 {version} 覆寫較新的 root 版本 {archive_version}')
+            if archive_version == version:
+                print(f"  root 已是 {version}，同月更新略過歸檔")
             else:
                 self.archive_root(repo_id, archive_version, PRETRAIN_FILE_RE)
 
@@ -1304,14 +1363,22 @@ class HFUploader:
         repo_id = IMAGE_REPO
         print(f"\n--- 上傳圖片資料集 → {repo_id} ---")
 
+        # tw / cn 共用一個 repo，但單語言發佈只授權歸檔與清理該語言的
+        # root 分片，不能碰本次未選取的另一語言。
+        upload_pattern = _image_file_pattern(files_by_lang)
+
         is_new = self.ensure_repo(repo_id)
 
         if archive and not is_new:
-            archive_version = archive_as or self.detect_archive_version(repo_id, version, IMAGE_FILE_RE)
-            if archive_version >= version:
-                print(f"  ⚠ 推算出的歸檔月份 {archive_version} 不早於新版本 {version}，略過歸檔")
+            archive_version = archive_as or self.detect_archive_version(
+                repo_id, version, upload_pattern)
+            if archive_version > version:
+                raise RuntimeError(
+                    f'拒絕以 {version} 覆寫較新的 root 版本 {archive_version}')
+            if archive_version == version:
+                print(f"  root 已是 {version}，同月更新略過歸檔")
             else:
-                self.archive_root(repo_id, archive_version, IMAGE_FILE_RE)
+                self.archive_root(repo_id, archive_version, upload_pattern)
 
         file_map = {}
         for lang, paths in sorted(files_by_lang.items()):
@@ -1323,7 +1390,8 @@ class HFUploader:
                     # 資料被切分成多個檔案時，README 的 data_files 需要手動補上
                     file_map[path] = base.replace('.jsonl', f'_{i + 1}.jsonl')
                     print(f"  ⚠ {lang} 有多個分割檔，README 的 data_files 需手動加入 {file_map[path]}")
-        return self.upload(repo_id, file_map, version, dump_date, IMAGE_FILE_RE, is_image=True)
+        return self.upload(
+            repo_id, file_map, version, dump_date, upload_pattern, is_image=True)
 
     # ---------- 取得上一版大小（供檢查比對） ----------
 
@@ -1336,10 +1404,14 @@ class HFUploader:
             return None
 
     def previous_image_size(self, lang):
-        """上一版圖片資料的檔案大小"""
+        """上一版圖片資料所有分片的總大小。"""
         try:
             files = self._root_data_files(IMAGE_REPO, IMAGE_FILE_RE)
-            return files.get(IMAGE_REPO_FILENAME[lang])
+            base, ext = os.path.splitext(IMAGE_REPO_FILENAME[lang])
+            part_re = re.compile(
+                rf'^{re.escape(base)}(?:_\d+)?{re.escape(ext)}$')
+            sizes = [size for name, size in files.items() if part_re.match(name)]
+            return sum(sizes) if sizes else None
         except Exception as e:
             print(f"  ⚠ 無法取得 {lang} 上一版圖片大小: {e}")
             return None
@@ -1360,14 +1432,15 @@ def find_pretrain_files(output_dir):
     )
 
 
-def find_image_files(output_dir):
+def find_image_files(output_dir, lang=None):
     """找出目錄下的圖片 JSONL（含被分割的 _1、_2 檔案）"""
     if not os.path.isdir(output_dir):
         return []
+    pattern = IMAGE_FILE_RE if lang is None else _image_file_pattern((lang,))
     return sorted(
         os.path.join(output_dir, f)
         for f in os.listdir(output_dir)
-        if IMAGE_FILE_RE.match(f)
+        if pattern.match(f)
     )
 
 
@@ -1405,6 +1478,18 @@ def preflight_check(langs=('tw', 'cn'), token=None, upload_pretrain=True,
         print("    請執行 `hf auth login`，或設定 HF_TOKEN 環境變數 / 加上 --hf-token")
         return False
 
+    langs = tuple(langs)
+    if not langs:
+        print('✗ 至少要指定一個語言')
+        return False
+    if not any((upload_pretrain, upload_images, upload_omni)):
+        print('✗ 至少要選擇一種上傳資料集')
+        return False
+    unknown = set(langs) - {'tw', 'cn'}
+    if unknown:
+        print(f"✗ 不支援的語言碼: {sorted(unknown)}")
+        return False
+
     repos = []
     if upload_pretrain:
         repos += [PRETRAIN_REPOS[lang] for lang in langs]
@@ -1416,8 +1501,11 @@ def preflight_check(langs=('tw', 'cn'), token=None, upload_pretrain=True,
     ok = True
     for repo_id in repos:
         try:
-            api.repo_info(repo_id, repo_type='dataset')
-            print(f"  ✓ {repo_id}")
+            if api.repo_exists(repo_id, repo_type='dataset'):
+                api.repo_info(repo_id, repo_type='dataset')
+                print(f"  ✓ {repo_id}")
+            else:
+                print(f"  ✓ {repo_id}（尚未建立，正式執行時會建立）")
         except Exception as e:
             print(f"  ✗ {repo_id}: {e}")
             ok = False
@@ -1444,7 +1532,17 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
     Returns:
         bool: 是否全部成功
     """
+    langs = tuple(langs)
+    if not langs:
+        raise ValueError('至少要指定一個語言')
+    if not any((upload_pretrain, upload_images, upload_omni)):
+        raise ValueError('至少要選擇一種上傳資料集')
+    unknown = set(langs) - {'tw', 'cn'}
+    if unknown:
+        raise ValueError(f'不支援的語言碼: {sorted(unknown)}')
     version = dump_date_to_version(dump_date)
+    if archive_as is not None:
+        shift_month(archive_as, 0)  # 同時驗證 YYMM 與月份範圍
 
     print("\n" + "=" * 60)
     print("上傳到 Hugging Face")
@@ -1467,7 +1565,20 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
             # omni 版的分片檔名與純文字版相同，靠 omni/ 子目錄區分
             omni_files[lang] = find_pretrain_files(os.path.join(output_dir, 'omni'))
         if upload_images:
-            image_files[lang] = find_image_files(output_dir)
+            image_files[lang] = find_image_files(output_dir, lang=lang)
+
+    # --skip-checks 只略過內容檢查，不能把「根本沒有輸出檔」當成成功。
+    missing = []
+    for lang in langs:
+        if upload_pretrain and not pretrain_files.get(lang):
+            missing.append(f'{lang} pretrain')
+        if upload_omni and not omni_files.get(lang):
+            missing.append(f'{lang} omni')
+        if upload_images and not image_files.get(lang):
+            missing.append(f'{lang} images')
+    if missing:
+        print(f"✗ 找不到要上傳的本地輸出: {', '.join(missing)}")
+        return False
 
     # ---- 上傳前檢查 ----
     if skip_checks:
@@ -1482,7 +1593,7 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
                 results.append(check_pretrain_files(
                     pretrain_files[lang], lang, uploader.previous_pretrain_size(lang)))
                 results[-1].report()
-            if upload_omni and omni_files.get(lang):
+            if upload_omni:
                 results.append(check_pretrain_files(
                     omni_files[lang], lang, None,
                     columns=PRETRAIN_COLUMNS + ('images',),
@@ -1490,9 +1601,21 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
                 results[-1].report()
             if upload_images:
                 paths = image_files[lang]
-                results.append(check_image_file(
-                    paths[0] if paths else None, lang, uploader.previous_image_size(lang)))
-                results[-1].report()
+                previous = uploader.previous_image_size(lang)
+                for path in paths:
+                    results.append(check_image_file(
+                        path, lang, previous if len(paths) == 1 else None))
+                    results[-1].report()
+                if len(paths) > 1 and previous:
+                    size_result = CheckResult(f'image-{lang}（全部分片）')
+                    total_size = sum(os.path.getsize(path) for path in paths)
+                    ratio = total_size / previous - 1
+                    size_result.info(
+                        f'總大小: {_human_size(total_size)}｜與上一版 {ratio:+.1%}')
+                    if abs(ratio) > SIZE_TOLERANCE:
+                        size_result.warn(_size_drift_note(ratio, '全部分片總大小'))
+                    results.append(size_result)
+                    size_result.report()
 
         # dataset card 的 YAML 也要檢查。這是 dry-run 原本的缺口：它不呼叫
         # create_commit，所以卡片的前置資料從來沒被驗證過，結果 dry-run 全綠、
@@ -1501,9 +1624,9 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
         card_check = CheckResult('dataset card YAML')
         card_repos = []
         if upload_pretrain:
-            card_repos += [PRETRAIN_REPOS[l] for l in langs]
+            card_repos += [PRETRAIN_REPOS[lang] for lang in langs]
         if upload_omni:
-            card_repos += [OMNI_REPOS[l] for l in langs]
+            card_repos += [OMNI_REPOS[lang] for lang in langs]
         if upload_images:
             card_repos.append(IMAGE_REPO)
         for repo_id in card_repos:
@@ -1528,8 +1651,11 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
                  'cn': zhconv._target_only_chars(tables['zh2Hans'])}
         script_check = CheckResult('dataset card 字體')
         for repo_id in card_repos:
-            lang = next((l for l, r in list(PRETRAIN_REPOS.items())
-                         + list(OMNI_REPOS.items()) if r == repo_id), 'tw')
+            lang = next(
+                (candidate_lang for candidate_lang, candidate_repo
+                 in list(PRETRAIN_REPOS.items()) + list(OMNI_REPOS.items())
+                 if candidate_repo == repo_id),
+                'tw')
             card = dataset_card(repo_id, version, dump_date) or ''
             bad = sorted({c for c in card if c in wrong[lang]})
             if bad:
@@ -1562,7 +1688,7 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
                 print(f"✗ Pretrain ({lang}) 上傳失敗: {e}")
                 import traceback
                 traceback.print_exc()
-                ok = False
+                return False
 
     for lang in langs:
         if upload_omni and omni_files.get(lang):
@@ -1573,7 +1699,7 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
                 print(f"✗ omni ({lang}) 上傳失敗: {e}")
                 import traceback
                 traceback.print_exc()
-                ok = False
+                return False
 
     if upload_images:
         available = {lang: paths for lang, paths in image_files.items() if paths}
@@ -1585,7 +1711,7 @@ def run_upload(base_dir, dump_date, langs=('tw', 'cn'), token=None, dry_run=Fals
                 print(f"✗ 圖片資料集上傳失敗: {e}")
                 import traceback
                 traceback.print_exc()
-                ok = False
+                return False
 
     print("\n" + "=" * 60)
     print("✓ 上傳流程完成" if ok else "✗ 上傳流程有錯誤")
@@ -1608,8 +1734,11 @@ def main():
     parser.add_argument('--archive-as', type=str, help='手動指定歸檔月份（YYMM），預設自動判斷')
     parser.add_argument('--skip-checks', action='store_true', help='略過上傳前檢查')
     parser.add_argument('--force-upload', action='store_true', help='檢查未通過時仍強制上傳')
-    parser.add_argument('--only-pretrain', action='store_true', help='只上傳文字 Pretrain 資料集')
-    parser.add_argument('--only-images', action='store_true', help='只上傳圖片資料集')
+    only = parser.add_mutually_exclusive_group()
+    only.add_argument('--only-pretrain', action='store_true',
+                      help='只上傳純文字 Pretrain 資料集')
+    only.add_argument('--only-images', action='store_true', help='只上傳圖片資料集')
+    only.add_argument('--only-omni', action='store_true', help='只上傳圖文交錯資料集')
 
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -1629,8 +1758,9 @@ def main():
         archive_as=args.archive_as,
         skip_checks=args.skip_checks,
         force=args.force_upload,
-        upload_pretrain=not args.only_images,
-        upload_images=not args.only_pretrain,
+        upload_pretrain=not (args.only_images or args.only_omni),
+        upload_images=not (args.only_pretrain or args.only_omni),
+        upload_omni=not (args.only_pretrain or args.only_images),
     )
     sys.exit(0 if ok else 1)
 

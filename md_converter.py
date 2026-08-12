@@ -21,7 +21,7 @@ import infobox_labels
 import metadata_store
 import template_store
 import wikidata_store
-from page_store import PageWriter, mark_complete
+from page_store import FAILURE_REPORT, PageWriter, mark_complete
 from wiki_parser import (WIKIParse, set_infobox_labels, set_template_store,
                          set_wikidata_values)
 
@@ -32,6 +32,16 @@ _PARSER = None
 
 
 _WIKIDATA = {}
+
+
+class ParseFailuresError(RuntimeError):
+    """至少一篇頁面解析失敗，這批中間層不可宣告完成。"""
+
+    def __init__(self, count, report_path):
+        self.count = count
+        self.report_path = report_path
+        super().__init__(
+            f'{count:,} 篇解析失敗；診斷報告已寫入 {report_path}')
 
 
 def _init_worker(markdown):
@@ -164,15 +174,23 @@ class WIKIParse2Doc(WIKIParse):
 
         iterator.set_description(f'Articles parsed: {total}')
 
-        # 失敗的條目要明確報出來，不能靜默吞掉
+        failure_path = os.path.join(self.output_dir, FAILURE_REPORT)
+
+        # 失敗的條目要明確報出來，不能靜默吞掉，也不能留下完成標記。
         if failed:
             print(f'\n⚠ {len(failed)} 篇解析失敗（已跳過）:')
             for title, err in failed[:10]:
                 print(f'    {title[:40]}: {err}')
-            with open(os.path.join(self.output_dir, 'parse_failures.txt'), 'w',
-                      encoding='utf-8') as f:
+            with open(failure_path, 'w', encoding='utf-8') as f:
                 for title, err in failed:
                     f.write(f'{title}\t{err}\n')
+            raise ParseFailuresError(len(failed), failure_path)
 
+        # 成功重跑後移除上一次的診斷檔；必須先移除再寫完成標記，才不會在
+        # 刪除失敗時留下「有失敗報告但同時宣告完成」的矛盾狀態。
+        try:
+            os.remove(failure_path)
+        except FileNotFoundError:
+            pass
         mark_complete(self.output_dir, total)
         return total

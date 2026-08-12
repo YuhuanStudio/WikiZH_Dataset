@@ -298,6 +298,14 @@ _FILE_TOKEN_RE = re.compile(
     r'[\w.()\-–—,&+!\x27]{1,60}(?:[ \t][\w.()\-–—,&+!\x27]{1,60}){0,15}'
     r'\.(?:jpg|jpeg|png|gif|svg|webp|ogg|ogv|webm|pdf|tif|tiff)', re.I)
 
+# 模板展開偶爾會產生沒有 `[[...]]` 外殼的完整圖片語法。若副檔名後緊接
+# `|`，後面全是圖片參數／圖說，不是正文；同一表格的下一格以全形 `｜` 為界。
+_ORPHAN_FILE_SYNTAX_RE = re.compile(
+    r'(?:File|Image|Media|檔案|档案|文件|圖片|图片|圖像|图像)\s*:\s*'
+    r'[\w.()\-–—,&+!\x27]{1,60}(?:[ \t][\w.()\-–—,&+!\x27]{1,60}){0,15}'
+    r'\.(?:jpg|jpeg|png|gif|svg|webp|ogg|ogv|webm|pdf|tif|tiff)'
+    r'(?:\|[^｜\n]*)?', re.I)
+
 # 上面兩條圖片殘骸正則命中時，必定先出現這個副檔名。用簡單、
 # 沒有可變量詞的正則當 gate，並保留 re.I 對 Unicode 大小寫的原始語意。
 _IMAGE_EXTENSION_RE = re.compile(
@@ -325,11 +333,14 @@ def _is_navbox_line(line):
 def drop_image_debris(text):
     """移除圖片檔名殘骸、表格分隔線與導航框列"""
     if _IMAGE_EXTENSION_RE.search(text):
-        text = _IMAGE_CAPTION_RE.sub('', text)
+        text = _ORPHAN_FILE_SYNTAX_RE.sub('', text)
         text = _FILE_TOKEN_RE.sub('', text)
+        text = _IMAGE_CAPTION_RE.sub('', text)
     text = _FILE_PREFIX_RE.sub('', text)
     if '|' in text:
-        text = '\n'.join('' if _is_navbox_line(l) else l for l in text.split('\n'))
+        text = '\n'.join(
+            '' if _is_navbox_line(line) else line
+            for line in text.split('\n'))
     return _RULE_LINE_RE.sub('', text)
 
 
@@ -365,8 +376,6 @@ def strip_leftover_markup(text):
     text = remove_leftover_templates(text)
     text = remove_leftover_tables(text)
     text = _PARAM_LINE_RE.sub('', text)
-    text = drop_markup_debris(text)
-    text = drop_image_debris(text)
     text = _CATEGORY_RE.sub('', text)
     text = remove_file_links(text)
 
@@ -383,6 +392,10 @@ def strip_leftover_markup(text):
             break
         text = new
 
+    # 殘骸判斷一定要在連結解開之後。英文正文 `See [[Foo]] and [[Bar]]`
+    # 沒有中文與句讀，若先跑 `_DEBRIS_LINE_RE`，整行會因含 `[` 被刪光。
+    text = drop_markup_debris(text)
+    text = drop_image_debris(text)
     text = _HTML_TAG_RE.sub('', text)
     text = _MAGIC_WORD_RE.sub('', text)
     for entity, char in _HTML_ENTITIES.items():
@@ -396,6 +409,145 @@ def strip_leftover_markup(text):
         text = _NAMED_ENTITY_RE.sub(
             lambda m: html.unescape(m.group(0)), text)
     return text
+
+
+_FINAL_MARKUP_NEEDLES = ('{{', '}}', '[[', ']]', '<', '&', '{|', '|}', '__')
+
+
+def separate_adjacent_math(text):
+    """拆開相鄰行內公式的分隔符，保留真正的 display math。
+
+    解析器會把公式輸出成 ``$a$``。若兩條公式之間只有稍後才會消失的
+    wiki 標記，最終會收斂成 ``$a$$b$``；中間的 ``$$`` 會被 Markdown
+    誤認為 display delimiter。用狀態機判斷目前是否已在行內公式中：只有
+    這個狀態下遇到的 ``$$`` 才是「上一條收尾＋下一條開頭」，改成
+    ``$ $``。從一般文本開始的 ``$$...$$`` 原樣保留。
+    """
+    if '$$' not in text:
+        return text
+    out = []
+    index = 0
+    state = 'text'
+    while index < len(text):
+        char = text[index]
+        if char == '\n':
+            out.append(char)
+            if state == 'inline':
+                state = 'text'
+            index += 1
+            continue
+        if char != '$':
+            out.append(char)
+            index += 1
+            continue
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 and text[cursor] == '\\':
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2:
+            out.append(char)
+            index += 1
+            continue
+        double = text.startswith('$$', index)
+        if state == 'inline':
+            if double:
+                out.append('$ $')
+                index += 2
+            else:
+                out.append('$')
+                state = 'text'
+                index += 1
+            continue
+        if state == 'display':
+            if double:
+                out.append('$$')
+                state = 'text'
+                index += 2
+            else:
+                out.append('$')
+                index += 1
+            continue
+        if double:
+            out.append('$$')
+            state = 'display'
+            index += 2
+        else:
+            out.append('$')
+            state = 'inline'
+            index += 1
+    return ''.join(out)
+
+
+def strip_restored_markup(text):
+    """清掉逐字遮罩還原後才露出的標記，但不碰公式與程式碼。
+
+    stage 1 到這之前一直用 PUA 保護 LaTeX/程式碼的括號。這是必要的，
+    但也表示混在壞表格裡的 `{{template}}` 若曾被誤包進逐字區，
+    第一輪清理看不到它。還原後再做一次精準清理：先把已經有明確
+    Markdown 邊界的公式、程式碼暫存，只對其餘散文呼叫原有標記清理。
+    """
+    if not any(needle in text for needle in _FINAL_MARKUP_NEEDLES):
+        return text
+
+    # 極少數巨型表格儲存格會在模板展開失敗後，把整段 parser
+    # function、File 連結、rowspan 和數字實體壓成同一行。行內的 `$`
+    # 是模板參數占位，不是公式；若先跑公式保護，這些小段又會被
+    # 藏起來而清不乾淨。只丟「超過 400 字且同時具有巢狀模板與另一種
+    # wiki 結構」的行；普通 LaTeX 的 `{{` 不會同時具有這些特徵。
+    filtered = []
+    in_fence = False
+    for line in text.split('\n'):
+        marker = line.strip()
+        if marker.startswith('```'):
+            in_fence = not in_fence
+            filtered.append(line)
+            continue
+        markup_soup = (
+            not in_fence and len(line) > 400 and '{{' in line
+            and any(token in line for token in (
+                '{{#', '[[File:', '[[檔案:', '[[文件:',
+                'rowspan=', '&#8203;')))
+        if not markup_soup:
+            filtered.append(line)
+    compacted = []
+    in_fence = False
+    for line in filtered:
+        marker = line.strip()
+        if marker.startswith('```'):
+            in_fence = not in_fence
+        if (not in_fence and not line and compacted
+                and compacted[-1] == ''):
+            continue
+        compacted.append(line)
+    text = '\n'.join(compacted)
+
+    spans = []
+    pieces = []
+    copied = 0
+    search_at = 0
+    while True:
+        match = _NO_CONVERT_RE.search(text, search_at)
+        if match is None:
+            pieces.append(text[copied:])
+            break
+        span = match.group(0)
+        if _is_verbatim(span):
+            pieces.append(text[copied:match.start()])
+            token = f'\ue100{len(spans)}\ue101'
+            pieces.append(token)
+            spans.append((token, span))
+            copied = match.end()
+            search_at = copied
+        else:
+            # 貨幣 `$250`、NTFS `$MFT` 不是公式；跳過這個開頭後繼續找，
+            # 不能保護它和後面 `$` 間的普通散文。
+            search_at = match.start() + 1
+
+    cleaned = strip_leftover_markup(''.join(pieces))
+    for token, span in spans:
+        cleaned = cleaned.replace(token, span)
+    return cleaned
 
 
 # ============================================================
@@ -478,8 +630,9 @@ def markdown_inline_to_text(text):
 # ============================================================
 
 # 含 LRM/RLM 等方向控制字元（U+200E/200F）——純文字語料裡是雜訊
-_INVISIBLE_RE = re.compile(r'[​-‏‪-‮⁠-⁤﻿­]')
-_SPACE_LIKE_RE = re.compile(r'[  -   　]')
+_INVISIBLE_RE = re.compile(
+    r'[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff\u00ad]')
+_SPACE_LIKE_RE = re.compile(r'[\u00a0\u2000-\u200a\u202f\u205f\u3000]')
 _CTRL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 # 私有使用區：來源文本本身就會出現（維基用 PUA 表示罕用字與自造符號），
 # 這些字元在任何字型下都是方框，對語料沒有價值。
@@ -547,6 +700,7 @@ _EMPTY_BRACKETS = [
     (re.compile(r'（([^（）()]*)\)'), '（', ')'),
     (re.compile(r'\(([^（）()]*)）'), '(', '）'),
     (re.compile(r'「([^「」]*)」'), '「', '」'),
+    (re.compile(r'『([^『』]*)』'), '『', '』'),
     # 彎引號也要收：簡體版用的是 `“”`，漏掉的話同一個空引號繁體刪了、簡體留著
     # （`鳴海繪里香` 的表格列尾巴多一個 `｜“”`）
     (re.compile(r'“([^“”]*)”'), '“', '”'),
@@ -572,11 +726,20 @@ def drop_empty_brackets(text):
     v1 會移除所有不含中文的括號，把（61.99%）、（1948-1956）、（SABC）、
     （Infinity）、（なつみ）這些原文資訊靜默刪掉。
     """
+    def replace_empty(m):
+        """表格中間的空括號可能就是要展示的符號，不能當殘骸刪掉。"""
+        before = m.string[:m.start()].rstrip(' \t')
+        after = m.string[m.end():].lstrip(' \t')
+        # `符號｜（ ）｜說明` 的括號本身是表格資料。只保護左右都有儲存格
+        # 分隔符的情形；列尾 `內容｜“”` 仍是模板清空後留下的空欄，照常收掉。
+        if before.endswith('｜') and after.startswith('｜'):
+            return m.group(0)
+        return '' if _BRACKET_FILLER_RE.match(m.group(1)) else m.group(0)
+
     for _ in range(2):
         changed = False
         for pattern, _o, _c in _EMPTY_BRACKETS:
-            new = pattern.sub(
-                lambda m: '' if _BRACKET_FILLER_RE.match(m.group(1)) else m.group(0), text)
+            new = pattern.sub(replace_empty, text)
             if new != text:
                 text, changed = new, True
         if not changed:

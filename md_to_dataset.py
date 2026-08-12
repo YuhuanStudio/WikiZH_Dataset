@@ -10,7 +10,9 @@
 
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 from functools import partial
 
@@ -25,8 +27,10 @@ from wiki_text import (
     drop_empty_brackets,
     finalize_block,
     resolve_variants,
+    separate_adjacent_math,
     should_skip_section,
     strip_leftover_markup,
+    strip_restored_markup,
 )
 
 
@@ -56,6 +60,15 @@ PARQUET_USE_DICTIONARY = os.environ.get(
 # 30 這個數字只多刪掉了真正的短條目（「李某某是中國演員。」9 字）。
 # 需要篩選的人傳 min_length 進來即可。
 MIN_DOC_LENGTH = 0
+
+# 資料集生成期間的檔名只出現在隱藏 staging 目錄；正式目錄裡只有通過完整
+# 驗證後才升級的 HF shards。這兩條規則也界定了本模組唯一有權替換的檔案，
+# 其他共存資產（圖片 JSONL、README 等）一律不碰。
+_TRAIN_SHARD_RE = re.compile(r'^train-\d{5}-of-\d{5}\.parquet$')
+_MANAGED_SHARD_RE = re.compile(
+    r'^(?:train-\d{5}-of-\d{5}|_shard_\d{5})\.parquet(?:\.part)?$')
+_STAGING_PREFIX = '.wikizh-staging-'
+_BACKUP_PREFIX = '.wikizh-backup-'
 
 # 消歧義頁的判定不在這裡，在解析階段讀維基自己掛的 `{{disambig}}` 標記模板
 # （見 wiki_parser.__is_disambiguation）。這裡只留「標題自己就寫著消歧義」
@@ -497,7 +510,7 @@ def _looks_like_reference_section(body):
 
     現在只有「絕大多數行都證明得了是書目／連結」才丟。證不了就留著。
     """
-    lines = [l.strip() for l in body.split('\n') if l.strip()]
+    lines = [line.strip() for line in body.split('\n') if line.strip()]
     if not lines:
         return True                       # 空章節，丟掉沒有損失
     refs = 0
@@ -537,8 +550,19 @@ def _drop_orphan_fences(doc):
     """
     if '```' not in doc:
         return doc
-    lines = doc.split('\n')
-    opener, drop = None, set()
+    # filter_wiki 會偶爾把我們產生的開頭圍欄黏到前一行：
+    # `- 整數部分：``` `。不先拆回獨佔行，下一個正常收尾會被當成
+    # 開頭，之後整篇的圍欄全部錯位。只認行尾的完整 marker；
+    # `飄```移`這種夾在文字中間的來源雜訊仍交給下面移除。
+    lines = []
+    glued = re.compile(r'^(.*\S)(```[A-Za-z0-9_+.-]*)[ \t]*$')
+    for line in doc.split('\n'):
+        match = glued.match(line)
+        if match:
+            lines.extend((match.group(1).rstrip(), match.group(2)))
+        else:
+            lines.append(line)
+    opener = None
     for i, line in enumerate(lines):
         stripped = line.strip()
         if opener is None:
@@ -548,10 +572,13 @@ def _drop_orphan_fences(doc):
                 lines[i] = line.replace('```', '')
         elif stripped == '```':
             opener = None
+        elif stripped.startswith('```'):
+            # 前一個 opener 是孤立標記；只移除標記本身、保留同一行的內容，
+            # 再讓這個新的 opener 去配對後面的收尾。
+            lines[opener] = lines[opener].replace('```', '', 1)
+            opener = i
     if opener is not None:
-        drop.add(opener)
-    if drop:
-        lines = [line for i, line in enumerate(lines) if i not in drop]
+        lines[opener] = lines[opener].replace('```', '', 1)
     return normalize_whitespace('\n'.join(lines))
 
 
@@ -668,7 +695,9 @@ def build_document(content, article_title, drop_broken=True, skip_flags=None):
     # 落單圍欄要在還原遮罩**之前**清掉：這一步會再正規化一次空白，而程式碼的
     # 縮排此時還是遮罩字元，正規化碰不到它。順序反過來的話，剛還原成真空白的
     # 縮排立刻會被 `\n[ \t]+` 規則吃掉，Python 範例就全部貼到行首了。
-    return unmask_verbatim_braces(_drop_orphan_fences(doc)), dropped_total, flags
+    doc = unmask_verbatim_braces(_drop_orphan_fences(doc))
+    doc = separate_adjacent_math(doc)
+    return strip_restored_markup(doc), dropped_total, flags
 
 
 # 「這篇進不進資料集」一律用簡體版判定。
@@ -879,6 +908,10 @@ def process_page(page, lang='tw', convert_variant=True, min_length=MIN_DOC_LENGT
     永遠補不完（`摩斯特`、`黃帝祭` 都是這樣一邊多一個章節）。改成算一次、兩邊共用，
     這一整類問題就不會再出現。
     """
+    if lang not in ('tw', 'cn'):
+        raise ValueError(f"lang 只能是 'tw' 或 'cn'，收到 {lang!r}")
+    if min_length < 0:
+        raise ValueError('min_length 不可小於 0')
     page_id = page['id']
     try:
         content = page['text']
@@ -924,8 +957,10 @@ def process_page(page, lang='tw', convert_variant=True, min_length=MIN_DOC_LENGT
                 _normalize_outside_fences(strip_image_marks(text)))),
         }
     except Exception as e:
-        print(f"處理條目 {page_id} 時出錯: {type(e).__name__}: {e}")
-        return None
+        # 「不合收錄條件」由上面的明確分支回傳 None；真正的處理例外不能
+        # 偽裝成略過，否則四組輸出會一起少同一篇而仍被判為筆數一致。
+        raise RuntimeError(
+            f"處理條目 {page_id} 時出錯: {type(e).__name__}: {e}") from e
 
 
 def _record_from_built(page, built, lang, omni):
@@ -956,47 +991,45 @@ def process_page_variants(page, convert_variant=True,
     該語言的兩個值都是 None。內容、排序與分片門檻都沿用
     ``process_page`` / ``process_directory_doc`` 的同一套邏輯。
     """
+    if min_length < 0:
+        raise ValueError('min_length 不可小於 0')
+
     empty = {
         'tw': {'plain': None, 'omni': None},
         'cn': {'plain': None, 'omni': None},
     }
-    page_id = page.get('id', '?')
-    try:
-        content = page['text']
-        if not content.strip():
-            return empty
-
-        # cn 同時是收錄門檻與章節去留的唯一基準；只組一次。
-        canonical = _build_one(content, page, _CANONICAL_LANG, convert_variant)
-        if canonical is None:
-            return empty
-        gate_text, gate_title, _raw, skip_flags = canonical
-        if len(gate_text) - len(gate_title) < min_length:
-            return empty
-
-        built_by_lang = {_CANONICAL_LANG: canonical}
-        if convert_variant:
-            built_by_lang['tw'] = _build_one(
-                content, page, 'tw', convert_variant, skip_flags=skip_flags)
-        else:
-            # 舊 API 在 convert_variant=False 時兩邊都沿用 canonical 文本，
-            # 但 omni 圖說仍依傳入的 lang 處理。
-            built_by_lang['tw'] = canonical
-
-        result = {}
-        for lang in ('tw', 'cn'):
-            built = built_by_lang.get(lang)
-            if built is None:
-                result[lang] = {'plain': None, 'omni': None}
-                continue
-            result[lang] = {
-                'plain': _record_from_built(page, built, lang, False),
-                'omni': _record_from_built(page, built, lang, True),
-            }
-        return result
-    except Exception as e:
-        print(f"處理條目 {page_id} 時出錯: {type(e).__name__}: {e}")
+    content = page['text']
+    if not content.strip():
         return empty
+
+    # cn 同時是收錄門檻與章節去留的唯一基準；只組一次。
+    canonical = _build_one(content, page, _CANONICAL_LANG, convert_variant)
+    if canonical is None:
+        return empty
+    gate_text, gate_title, _raw, skip_flags = canonical
+    if len(gate_text) - len(gate_title) < min_length:
+        return empty
+
+    built_by_lang = {_CANONICAL_LANG: canonical}
+    if convert_variant:
+        built_by_lang['tw'] = _build_one(
+            content, page, 'tw', convert_variant, skip_flags=skip_flags)
+    else:
+        # 舊 API 在 convert_variant=False 時兩邊都沿用 canonical 文本，
+        # 但 omni 圖說仍依傳入的 lang 處理。
+        built_by_lang['tw'] = canonical
+
+    result = {}
+    for lang in ('tw', 'cn'):
+        built = built_by_lang.get(lang)
+        if built is None:
+            result[lang] = {'plain': None, 'omni': None}
+            continue
+        result[lang] = {
+            'plain': _record_from_built(page, built, lang, False),
+            'omni': _record_from_built(page, built, lang, True),
+        }
+    return result
 
 
 def _write_shard(records, path):
@@ -1016,10 +1049,16 @@ def _write_shard(records, path):
         fields.append(('images', image_type))
         columns['images'] = [r.get('images') or [] for r in records]
     table = pa.Table.from_pydict(columns, schema=pa.schema(fields))
-    pq.write_table(table, path, compression='zstd',
-                   compression_level=PARQUET_COMPRESSION_LEVEL,
-                   row_group_size=PARQUET_ROW_GROUP_SIZE,
-                   use_dictionary=PARQUET_USE_DICTIONARY)
+    partial = path + '.part'
+    try:
+        pq.write_table(table, partial, compression='zstd',
+                       compression_level=PARQUET_COMPRESSION_LEVEL,
+                       row_group_size=PARQUET_ROW_GROUP_SIZE,
+                       use_dictionary=PARQUET_USE_DICTIONARY)
+        os.replace(partial, path)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
 
 
 def _process_shard(shard_path, lang='tw', convert_variant=True, min_length=MIN_DOC_LENGTH, limit=None, omni=False):
@@ -1061,7 +1100,7 @@ def _process_shard_variants(shard_path, convert_variant=True,
 
 
 def _finalize_output_state(state):
-    """寫完尾端 buffer，並將暫存分片改成 HF 檔名。"""
+    """寫完尾端 buffer，並在 staging 內改成 HF 檔名。"""
     if state['buffer']:
         path = os.path.join(
             state['output_dir'], f'_shard_{len(state["shards"]):05d}.parquet')
@@ -1079,7 +1118,66 @@ def _finalize_output_state(state):
             os.remove(target)
         os.rename(path, target)
         final.append(target)
+    state['final_files'] = final
     return final
+
+
+def _discard_staging(states):
+    """清掉未發布的 staging；正式輸出完全不碰。"""
+    for state in states.values():
+        staging = state.get('staging_dir')
+        if staging:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def _promote_output_states(states):
+    """四組全部完成後才一起發布；任一步失敗就還原舊 shards。"""
+    backups = []
+    backup_dirs = []
+    published = []
+    try:
+        # 先把四組既有的受管 shards 移到同檔案系統的備份目錄。圖片 JSONL、
+        # README 等共存資產不符合 _MANAGED_SHARD_RE，絕不會被移動。
+        for state in states.values():
+            output_dir = state['final_output_dir']
+            backup_dir = tempfile.mkdtemp(prefix=_BACKUP_PREFIX, dir=output_dir)
+            backup_dirs.append(backup_dir)
+            for name in sorted(os.listdir(output_dir)):
+                if not _MANAGED_SHARD_RE.fullmatch(name):
+                    continue
+                original = os.path.join(output_dir, name)
+                backup = os.path.join(backup_dir, name)
+                os.replace(original, backup)
+                backups.append((original, backup))
+
+        for state in states.values():
+            promoted = []
+            for staged in state.get('final_files', []):
+                target = os.path.join(
+                    state['final_output_dir'], os.path.basename(staged))
+                os.replace(staged, target)
+                published.append(target)
+                promoted.append(target)
+            state['published_files'] = promoted
+    except Exception:
+        # 刪掉這輪已升級的檔，再把上一版逐一放回原位。
+        for target in reversed(published):
+            try:
+                os.remove(target)
+            except FileNotFoundError:
+                pass
+        for original, backup in reversed(backups):
+            if os.path.exists(backup):
+                os.replace(backup, original)
+        _discard_staging(states)
+        for directory in backup_dirs:
+            shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+    # 此刻四組正式 shards 都已就位；備份與空 staging 才可丟棄。
+    for directory in backup_dirs:
+        shutil.rmtree(directory, ignore_errors=True)
+    _discard_staging(states)
 
 
 def process_directory_variants(input_dir, output_dirs, num_workers=None,
@@ -1103,10 +1201,14 @@ def process_directory_variants(input_dir, output_dirs, num_workers=None,
 
     in_shards = shard_paths(input_dir)
     if max_files:
-        in_shards = in_shards[:max(1, max_files // 5000)]
+        in_shards = in_shards[:max(1, (max_files + 4999) // 5000)]
     if not in_shards:
         print(f"✗ {input_dir} 沒有 pages-*.jsonl 分片")
-        return {}, 0
+        return {}
+    if max_files is not None and max_files <= 0:
+        raise ValueError('max_files 必須是正整數')
+    if min_length < 0:
+        raise ValueError('min_length 不可小於 0')
 
     # 台灣詞彙白名單需要一份詞表才知道哪裡是詞的邊界（見 tw_vocab）。
     # 在 fork 之前裝好，子行程直接繼承，不必每個工人各讀一次。
@@ -1122,11 +1224,24 @@ def process_directory_variants(input_dir, output_dirs, num_workers=None,
     states = {}
     for lang in ('tw', 'cn'):
         for mode in ('plain', 'omni'):
-            output_dir = (output_dirs[lang] if mode == 'plain'
-                          else os.path.join(output_dirs[lang], 'omni'))
-            os.makedirs(output_dir, exist_ok=True)
+            final_output_dir = (
+                output_dirs[lang] if mode == 'plain'
+                else os.path.join(output_dirs[lang], 'omni'))
+            os.makedirs(final_output_dir, exist_ok=True)
+            # staging 可以安全清理；backup 代表上一次可能在發布中斷，必須先
+            # 人工確認，不能冒險刪掉唯一可恢復的上一版。
+            for name in os.listdir(final_output_dir):
+                path = os.path.join(final_output_dir, name)
+                if name.startswith(_BACKUP_PREFIX) and os.path.isdir(path):
+                    raise RuntimeError(f'發現未處理的資料集備份：{path}')
+                if name.startswith(_STAGING_PREFIX) and os.path.isdir(path):
+                    shutil.rmtree(path)
+            staging_dir = tempfile.mkdtemp(
+                prefix=_STAGING_PREFIX, dir=final_output_dir)
             states[(lang, mode)] = {
-                'output_dir': output_dir,
+                'output_dir': staging_dir,
+                'staging_dir': staging_dir,
+                'final_output_dir': final_output_dir,
                 'buffer': [], 'bytes': 0, 'shards': [], 'total': 0,
             }
 
@@ -1135,35 +1250,53 @@ def process_directory_variants(input_dir, output_dirs, num_workers=None,
 
     worker = partial(_process_shard_variants,
                      convert_variant=convert_variant,
-                     min_length=min_length, limit=max_files)
+                     min_length=min_length, limit=None)
     skipped = {'tw': 0, 'cn': 0}
-    with multiprocessing.Pool(processes=num_workers) as pool:
-        for groups, n_skipped in tqdm(
-                pool.imap(worker, in_shards), total=len(in_shards),
-                desc='轉換雙語分片'):
-            for lang in ('tw', 'cn'):
-                skipped[lang] += n_skipped[lang]
-            for key, records in groups.items():
-                state = states[key]
-                for record in records:
-                    state['buffer'].append(record)
-                    state['bytes'] += len(record['text'].encode('utf-8'))
-                    state['total'] += 1
-                    if state['bytes'] >= shard_bytes:
-                        path = os.path.join(
-                            state['output_dir'],
-                            f'_shard_{len(state["shards"]):05d}.parquet')
-                        _write_shard(state['buffer'], path)
-                        state['shards'].append(path)
-                        print(f"\n  {key[0]}/{key[1]} 寫出 "
-                              f"{os.path.basename(path)}"
-                              f"（{len(state['buffer']):,} 筆）")
-                        state['buffer'] = []
-                        state['bytes'] = 0
+    try:
+        with multiprocessing.Pool(processes=num_workers) as pool:
+            for groups, n_skipped in tqdm(
+                    pool.imap(worker, in_shards), total=len(in_shards),
+                    desc='轉換雙語分片'):
+                if max_files is not None:
+                    remaining = max_files - states[('cn', 'plain')]['total']
+                    if remaining <= 0:
+                        break
+                    if len(groups[('cn', 'plain')]) > remaining:
+                        groups = {key: records[:remaining]
+                                  for key, records in groups.items()}
+                for lang in ('tw', 'cn'):
+                    skipped[lang] += n_skipped[lang]
+                for key, records in groups.items():
+                    state = states[key]
+                    for record in records:
+                        state['buffer'].append(record)
+                        state['bytes'] += len(record['text'].encode('utf-8'))
+                        state['total'] += 1
+                        if state['bytes'] >= shard_bytes:
+                            path = os.path.join(
+                                state['output_dir'],
+                                f'_shard_{len(state["shards"]):05d}.parquet')
+                            _write_shard(state['buffer'], path)
+                            state['shards'].append(path)
+                            print(f"\n  {key[0]}/{key[1]} 寫出 "
+                                  f"{os.path.basename(path)}"
+                                  f"（{len(state['buffer']):,} 筆）")
+                            state['buffer'] = []
+                            state['bytes'] = 0
+
+        totals = {key: state['total'] for key, state in states.items()}
+        if not totals or 0 in totals.values() or len(set(totals.values())) != 1:
+            raise RuntimeError(f'四組輸出的筆數不一致或為 0: {totals}')
+        for state in states.values():
+            _finalize_output_state(state)
+        _promote_output_states(states)
+    except Exception:
+        _discard_staging(states)
+        raise
 
     result = {}
     for key, state in states.items():
-        final = _finalize_output_state(state)
+        final = state['published_files']
         size = sum(os.path.getsize(p) for p in final)
         result[key] = (final, state['total'])
         print(f"✓ {key[0]}/{key[1]}: {state['total']:,} 筆，"
@@ -1189,21 +1322,42 @@ def process_directory_doc(input_dir, output_dir, lang='tw',
 
     in_shards = shard_paths(input_dir)
     if max_files:
-        in_shards = in_shards[:max(1, max_files // 5000)]
+        in_shards = in_shards[:max(1, (max_files + 4999) // 5000)]
     if not in_shards:
         print(f"✗ {input_dir} 沒有 pages-*.jsonl 分片")
         return [], 0
+    if lang not in ('tw', 'cn'):
+        raise ValueError(f"lang 只能是 'tw' 或 'cn'，收到 {lang!r}")
+    if max_files is not None and max_files <= 0:
+        raise ValueError('max_files 必須是正整數')
+    if min_length < 0:
+        raise ValueError('min_length 不可小於 0')
 
     if num_workers is None:
         num_workers = max(1, multiprocessing.cpu_count() - 1)
 
+    if lang == 'tw':
+        # 單語言入口也必須安裝詞邊界護欄；過去只有四組合併入口會做，
+        # README 的 `--to-pretrain --lang tw` 反而可能把「電視頻道」切壞。
+        import title_words
+        import tw_vocab
+
+        t_words = time.perf_counter()
+        tw_vocab.load_guard(title_words.build(input_dir))
+        print(f"詞邊界詞表 {len(tw_vocab._GUARD):,} 個詞"
+              f"（{time.perf_counter() - t_words:.0f} 秒）", flush=True)
+
     os.makedirs(output_dir, exist_ok=True)
+    for name in os.listdir(output_dir):
+        if (re.fullmatch(r'_shard_\d{5}\.parquet(?:\.part)?', name)
+                or re.fullmatch(r'train-\d{5}-of-\d{5}\.parquet', name)):
+            os.remove(os.path.join(output_dir, name))
     print(f"輸入: {input_dir}（{len(in_shards)} 個分片）")
     print(f"輸出: {output_dir}")
     print(f"語言: {'繁體中文' if lang == 'tw' else '簡體中文'}｜{num_workers} 個進程")
 
     worker = partial(_process_shard, lang=lang, convert_variant=convert_variant, omni=omni,
-                     min_length=min_length, limit=max_files)
+                     min_length=min_length, limit=None)
 
     shards = []
     buffer = []
@@ -1215,6 +1369,11 @@ def process_directory_doc(input_dir, output_dir, lang='tw',
         for records, n_skipped in tqdm(pool.imap(worker, in_shards),
                                        total=len(in_shards), desc='轉換分片'):
             skipped += n_skipped
+            if max_files is not None:
+                remaining = max_files - total
+                if remaining <= 0:
+                    break
+                records = records[:remaining]
             for record in records:
                 buffer.append(record)
                 buffered_bytes += len(record['text'].encode('utf-8'))

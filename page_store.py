@@ -22,6 +22,7 @@ import re
 SHARD_SIZE = 5000
 SHARD_RE = re.compile(r'^pages-\d{5}\.jsonl$')
 DONE_MARKER = '.conversion_complete'
+FAILURE_REPORT = 'parse_failures.txt'
 
 
 class PageWriter:
@@ -105,4 +106,21 @@ def mark_complete(page_dir, total):
 
 
 def is_complete(page_dir):
-    return os.path.exists(os.path.join(page_dir, DONE_MARKER))
+    marker = os.path.join(page_dir, DONE_MARKER)
+    if not os.path.isfile(marker) or not shard_paths(page_dir):
+        return False
+    # 舊版即使有單頁解析失敗仍會寫完成標記。保留失敗報告的同時，也要讓
+    # 這類既有目錄不再被後續流程誤認成完整資料。
+    failure_report = os.path.join(page_dir, FAILURE_REPORT)
+    try:
+        if os.path.isfile(failure_report) and os.path.getsize(failure_report) > 0:
+            return False
+    except OSError:
+        # 無法確認失敗報告內容時採保守判定，避免沿用可能不完整的中間層。
+        return False
+    try:
+        with open(marker, encoding='utf-8') as f:
+            total = int(f.read().strip())
+    except (OSError, ValueError):
+        return False
+    return total > 0
