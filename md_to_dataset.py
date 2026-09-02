@@ -268,6 +268,13 @@ _EMPTY_ITEM_RE = re.compile(r'^[-*•]\s*[^\w一-鿿]*$')
 # 只當保險，真正把兩者分開的是句讀。
 _EMPTY_FACT_RE = re.compile(r'^[-*•]\s*[^：:\n，。！？；、,.!?;]{1,30}[：:]\s*$')
 
+# 圖片位置標記與 `<ref>` 在較晚階段才移除；移除後有些資訊框事實只剩空標籤，
+# 或「資料主要來源／參考／註腳」等沒有實際內容的引導語。
+_REFERENCE_ONLY_FACT_RE = re.compile(
+    r'^[-*•]\s*[^：:\n，。！？；、,.!?;]{1,30}[：:]\s*'
+    r'(?:(?:資料主要來源|资料主要来源|主要參考資料|主要参考资料'
+    r'|參考|参考|註腳|注脚)[：:]?[、,，;；\s]*)+$')
+
 CLAUSE_SPLIT_RE = re.compile(r'(?<=[，、；])')
 SENTENCE_SPLIT_RE = re.compile(r'(?<=[。！？])')
 
@@ -288,7 +295,8 @@ def _drop_broken_sentences(text):
             continue
 
         # 內容被移除後只剩標點的列表項（`-。`、`- 、`）不是內容
-        if _EMPTY_ITEM_RE.match(stripped) or _EMPTY_FACT_RE.match(stripped):
+        if (_EMPTY_ITEM_RE.match(stripped) or _EMPTY_FACT_RE.match(stripped)
+                or _REFERENCE_ONLY_FACT_RE.match(stripped)):
             dropped += 1
             continue
 
@@ -489,9 +497,12 @@ _TITLE_MARK_RE = re.compile(r'[《》〈〉「」『』]')
 _REFERENCE_LINE_RE = re.compile(
     r'(?i)^\s*[-*•]?\s*(?:'
     r'https?://|www\.'                       # 裸網址
+    r'|(?:Template|Category|模板|分類|分类)\s*:'  # 導航模板／分類殘骸
     r'|ISBN[\s:]|ISSN[\s:]|doi[\s:]|OCLC[\s:]'
     r'|\S+\.(?:com|org|net|edu|gov|info|cn|tw|hk|jp)\b'
     r')')
+_REFERENCE_NAMESPACE_LINE_RE = re.compile(
+    r'(?i)^\s*(?:Template|Category|模板|分類|分类)\s*:[^\n]*$')
 # 一行裡同時有「出版年」與「出版社／期刊」味道的，也是書目
 _CITATION_HINT_RE = re.compile(
     r'(?:\d{4}\s*年?\s*[.,、，；]'          # 出版年後面接標點
@@ -609,6 +620,8 @@ def build_document(content, article_title, drop_broken=True, skip_flags=None):
         skip_flags = None
 
     for index, (level, title, body, title_path) in enumerate(nodes):
+        reference_section = (
+            level > 1 and should_skip_section(title_path[1:] or title_path))
         skip = None
         if skip_flags is not None:
             flag = skip_flags[index]
@@ -620,8 +633,7 @@ def build_document(content, article_title, drop_broken=True, skip_flags=None):
             if isinstance(flag, tuple) and flag[0] == level:
                 skip = flag[2]
         if skip is None:
-            skip = (level > 1 and should_skip_section(title_path[1:] or title_path)
-                    and _looks_like_reference_section(body))
+            skip = reference_section and _looks_like_reference_section(body)
         flags.append((level, _canon_section(title), skip))
         if skip:
             # 保留節點但清空內容，不能直接 continue。
@@ -633,6 +645,12 @@ def build_document(content, article_title, drop_broken=True, skip_flags=None):
             # 留成空節點，讓既有機制決定：底下有內容才把標題留著，否則一起丟掉。
             sections.append((level, title, ''))
             continue
+
+        # 混合型外部連結節不能整節丟棄，但其中的 namespace 行仍是確定的標記。
+        if reference_section:
+            body = '\n'.join(
+                line for line in body.split('\n')
+                if not _REFERENCE_NAMESPACE_LINE_RE.match(line))
 
         body = body.strip()
         if not body:
@@ -851,6 +869,28 @@ def _normalize_outside_fences(text):
     return re.sub(r'\n{3,}', '\n\n', ''.join(out)).strip()
 
 
+def _drop_post_image_fact_debris(text):
+    """移除圖片／註腳消失後才成為空殼的資訊框事實行。"""
+    lines = [line for line in text.split('\n')
+             if not (_EMPTY_FACT_RE.match(line.strip())
+                     or _REFERENCE_ONLY_FACT_RE.match(line.strip()))]
+    return _drop_trailing_leadin(_normalize_outside_fences('\n'.join(lines)))
+
+
+def _drop_trailing_leadin(text):
+    """移除文件末尾已沒有後續內容的冒號引導語。"""
+    lines = text.split('\n')
+    for index in range(len(lines) - 1, -1, -1):
+        stripped = lines[index].strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        if stripped.endswith(('：', ':')):
+            del lines[index]
+            continue
+        break
+    return _normalize_outside_fences('\n'.join(lines))
+
+
 def build_omni(text, image_bodies, page_title, lang):
     """把正文的圖片位置標記換成 `<image>`，並產出對應的圖片清單
 
@@ -889,7 +929,7 @@ def build_omni(text, image_bodies, page_title, lang):
     out.append(prose(text[last:]))
     # 同樣不能再正規化：遮罩已還原，會吃掉程式碼縮排。佔位符前後各補一個
     # 換行就夠，多餘的空行由下面這條只作用在圍欄外的規則收掉。
-    return _normalize_outside_fences(''.join(out)), kept
+    return _drop_trailing_leadin(_normalize_outside_fences(''.join(out))), kept
 
 
 def process_page(page, lang='tw', convert_variant=True, min_length=MIN_DOC_LENGTH,
@@ -924,6 +964,8 @@ def process_page(page, lang='tw', convert_variant=True, min_length=MIN_DOC_LENGT
         if canonical is None:
             return None
         gate_text, gate_title, _raw, skip_flags = canonical
+        if not gate_text[len(gate_title):].strip():
+            return None
         if len(gate_text) - len(gate_title) < min_length:
             return None
 
@@ -939,23 +981,25 @@ def process_page(page, lang='tw', convert_variant=True, min_length=MIN_DOC_LENGT
         if omni:
             omni_text, images = build_omni(
                 text, page.get('images') or [], article_title, lang)
-            return {
+            record = {
                 'id': page_id,
                 'title': article_title,
                 'url': _article_url(raw_title or article_title),
                 'text': omni_text,
                 'images': images,
             }
-        return {
-            'id': page_id,
-            'title': article_title,
-            'url': _article_url(raw_title or article_title),
-            # 只剝標記，**不要**再呼叫 normalize_whitespace——此時逐字區塊的
-            # 遮罩已經還原成真空白，再正規化一次會把程式碼的縮排吃掉。
-            # 標記自成一行，`strip_image_marks` 連整行帶換行一起清掉，不留空行。
-            'text': _drop_empty_headings(_drop_empty_cells(
-                _normalize_outside_fences(strip_image_marks(text)))),
-        }
+        else:
+            record = {
+                'id': page_id,
+                'title': article_title,
+                'url': _article_url(raw_title or article_title),
+                # 只剝標記，**不要**再呼叫 normalize_whitespace——此時逐字區塊的
+                # 遮罩已經還原成真空白，再正規化一次會把程式碼的縮排吃掉。
+                # 標記自成一行，`strip_image_marks` 連整行帶換行一起清掉，不留空行。
+                'text': _drop_empty_headings(_drop_empty_cells(
+                    _drop_post_image_fact_debris(strip_image_marks(text)))),
+            }
+        return record if _record_has_body(record) else None
     except Exception as e:
         # 「不合收錄條件」由上面的明確分支回傳 None；真正的處理例外不能
         # 偽裝成略過，否則四組輸出會一起少同一篇而仍被判為筆數一致。
@@ -978,8 +1022,14 @@ def _record_from_built(page, built, lang, omni):
         record['images'] = images
     else:
         record['text'] = _drop_empty_headings(_drop_empty_cells(
-            _normalize_outside_fences(strip_image_marks(text))))
+            _drop_post_image_fact_debris(strip_image_marks(text))))
     return record
+
+
+def _record_has_body(record):
+    """最終記錄在標題行後仍有實質正文。"""
+    text = record['text']
+    return '\n' in text and bool(text.split('\n', 1)[1].strip())
 
 
 def process_page_variants(page, convert_variant=True,
@@ -1007,6 +1057,8 @@ def process_page_variants(page, convert_variant=True,
     if canonical is None:
         return empty
     gate_text, gate_title, _raw, skip_flags = canonical
+    if not gate_text[len(gate_title):].strip():
+        return empty
     if len(gate_text) - len(gate_title) < min_length:
         return empty
 
@@ -1029,6 +1081,10 @@ def process_page_variants(page, convert_variant=True,
             'plain': _record_from_built(page, built, lang, False),
             'omni': _record_from_built(page, built, lang, True),
         }
+    # 四組公開資料以 ID 互相對照。任一純文字版本最終只剩標題時，四組一起
+    # 略過，避免 plain 留空殼、omni 卻多出無法對照的 ID。
+    if any(not _record_has_body(result[lang]['plain']) for lang in ('tw', 'cn')):
+        return empty
     return result
 
 

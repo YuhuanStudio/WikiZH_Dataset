@@ -1314,6 +1314,7 @@ _INFOBOX_LAYOUT_KEY_RE = re.compile(
     # `labelN`／`dataN` 成對就是一條事實，下面會配對輸出。
     r'|size|width|height|align|valign|color|colour|bg|background|style|id'
     r'|border|float|module|header|above|below|subheader|sortkey'
+    r'|(?:header|title|label|data|body|above|below|subheader)(?:style|class)'
     r'|order|nowrap|display|hidden|state|collapsible|autocollapse)'
     r'[_ ]?\d*$')
 # `<br>` 是換行不是雜訊：`巴黎<br>倫敦` 是兩個值，換成頓號而不是整筆丟掉
@@ -2600,12 +2601,20 @@ class WIKIParse(object):
             if not head:
                 head = _WIKI_HEADING_OPEN_RE.match(line)
             if head:
+                heading_title = head.group(2).strip()
+                # 模板本身就是標題時，若模板展開為空會留下 `=====`。
+                # 當成正常標題會產生 `## 6` 加一行孤立 `=`；不建立空標題，
+                # 後續正文自然留在上一個有名稱的章節下。
+                if not heading_title.strip('= \t'):
+                    if trailing:
+                        fresh_text += trailing + self.nl
+                    continue
                 level = len(head.group(1))
                 idx = level - 2
                 counters[idx] = update(counters[idx])
                 for j in range(idx + 1, len(counters)):
                     counters[j] = '0'
-                line = form_line(counters[:idx + 1], head.group(2), level)
+                line = form_line(counters[:idx + 1], heading_title, level)
                 # 標題後面同一行還有正文，接在標題下方而不是併進標題
                 if trailing:
                     line = line.rstrip('\n') + '\n' + trailing

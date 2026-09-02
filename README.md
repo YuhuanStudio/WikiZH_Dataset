@@ -14,11 +14,11 @@
 
 | 資料集 | 形態 | 規模 |
 |---|---|---|
-| [![HF](https://img.shields.io/badge/wikipedia--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-zh-tw) | 純文字 · 台灣正體 🇹🇼 | 148 萬篇 |
-| [![HF](https://img.shields.io/badge/wikipedia--zh-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-zh) | 純文字 · 簡體 🇨🇳 | 148 萬篇 |
-| [![HF](https://img.shields.io/badge/wikipedia--omni--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-omni-zh-tw) | 圖文交錯 · 台灣正體 🖼️📝 | 148 萬篇 · 141 萬張圖 |
-| [![HF](https://img.shields.io/badge/wikipedia--omni--zh-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-omni-zh) | 圖文交錯 · 簡體 🖼️📝 | 148 萬篇 · 141 萬張圖 |
-| [![HF](https://img.shields.io/badge/wikipedia--image--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-image-zh-tw) | 圖文配對 🖼️ | 91.5 萬列 × 繁簡 |
+| [![HF](https://img.shields.io/badge/wikipedia--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-zh-tw) | 純文字 · 台灣正體 🇹🇼 | 149 萬篇 |
+| [![HF](https://img.shields.io/badge/wikipedia--zh-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-zh) | 純文字 · 簡體 🇨🇳 | 149 萬篇 |
+| [![HF](https://img.shields.io/badge/wikipedia--omni--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-omni-zh-tw) | 圖文交錯 · 台灣正體 🖼️📝 | 149 萬篇 · 142 萬張圖 |
+| [![HF](https://img.shields.io/badge/wikipedia--omni--zh-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-omni-zh) | 圖文交錯 · 簡體 🖼️📝 | 149 萬篇 · 142 萬張圖 |
+| [![HF](https://img.shields.io/badge/wikipedia--image--zh--tw-Download-blue?style=flat-square&logo=huggingface)](https://huggingface.co/datasets/yuhuanstudio/wikipedia-image-zh-tw) | 圖文配對 🖼️ | 92.1 萬列 × 繁簡 |
 
 ---
 
@@ -129,22 +129,22 @@ for img in imgs:                       # 圖片的 page_id 就是正文的 id
 
 ## 📈 資料概況
 
-以 2026-08-01 的 dump 實測（繁體版；簡體版數字相近、條目 ID 序列一致）：
+以 2026-09-01 的 dump 實測（繁體版；簡體版數字相近、條目 ID 序列一致）：
 
 | 規模 | |
 |---|---|
-| 條目數 | 1,482,182（純文字／omni／繁／簡四組完全相同）|
+| 條目數 | 1,485,232（純文字／omni／繁／簡四組完全相同）|
 | 總字元 | 17.6 億 |
 | Parquet 分片 | 7 個／組，zstd 壓縮 |
-| 圖片列數 | 繁體 915,171；簡體 915,167 |
-| omni 圖片總數 | 1,415,992（繁簡各一份）|
-| 含圖片的條目 | 繁體 324,364；簡體 324,363（21.9%），有圖者平均 4.4 張 |
+| 圖片列數 | 繁體 920,971；簡體 920,967 |
+| omni 圖片總數 | 1,423,388（繁簡各一份）|
+| 含圖片的條目 | 繁體 326,548；簡體 326,547（22.0%），有圖者平均 4.4 張 |
 
 **條目長度分布**（字元）
 
 | p5 | p25 | p50 | p75 | p95 | p99 | max |
 |---|---|---|---|---|---|---|
-| 86 | 209 | 457 | 1,072 | 4,532 | 11,711 | 228,681 |
+| 87 | 211 | 459 | 1,077 | 4,546 | 11,746 | 228,681 |
 
 中位數 457 字反映中文維基的真實樣貌——大量物種、小行星、村里、地理特徵的短條目。
 **沒有長度過濾**，要篩隨時可以自己做。
@@ -154,11 +154,11 @@ for img in imgs:                       # 圖片的 page_id 就是正文的 id
 | | |
 |---|---|
 | 平均章節數 | 3.4 |
-| 無章節（只有前言）| 234,132（15.8%）|
-| 列表為主的條目 | 314,783（21.2%）|
-| 含 LaTeX 公式的條目 | 16,497 |
-| 完全重複的文檔 | 12（0.0008%）|
-| 第一行為條目標題 | 99.99% |
+| 無章節（只有前言）| 232,591（15.7%）|
+| 列表為主的條目 | 315,805（21.3%）|
+| 含 LaTeX 公式的條目 | 16,549 |
+| 完全重複的文檔 | 0 |
+| 第一行為條目標題 | 100.00% |
 
 **結尾沒有句讀的條目佔 65.3%**，逐類分解後不是缺陷：列表項 92.3%、表格列 3.6%、
 英數／程式碼 2.0%、極短行 1.1%，真正「散文但沒句號」只有 1.0%——列表型與年表型
@@ -588,18 +588,18 @@ API 按條目批次查再快取，代價小三個數量級。
 
 | 檢查 | 抓什麼 | 目前結果 |
 |---|---|---|
-| **行為黃金案例** | 每個修好的缺陷留一個案例，改動後必跑 | **81 條全過** |
+| **行為黃金案例** | 每個修好的缺陷留一個案例，改動後必跑 | **88 條全過** |
 | **回溯壓力測試** | 正則指數級回溯（曾讓 13 個 worker 各燒 3 小時 50 分）| **28 項全過** |
 | **修正驗證** | 每個修正回出貨資料查那一篇條目 | **13 條全過** |
-| **全量硬性缺陷** | 15 類必須為 0 | 模板／表格／連結／ref／HTML／實體殘留，以及私有區字元、控制字元、連續空行等 **全部 0** |
+| **全量硬性缺陷** | 16 類必須為 0 | 空正文、模板／表格／連結／ref／HTML／實體殘留，以及私有區字元、控制字元、連續空行等 **全部 0** |
 | **結構不變量** | 圍欄成對、標題層級連續、無空章節 | 圍欄 0、空章節 0、首行 0 |
-| **繁簡結構對等** | 兩版只該差在字體 | 抽驗 20,000 篇：**0 個核心結構差異**；1 個地區譯文行數警示 |
+| **繁簡結構對等** | 兩版只該差在字體 | 抽驗 20,000 篇：**0 個阻斷差異**；1 個來源明定的地區譯文表格警示 |
 | **字體純度** | 散文裡有沒有「目標字體根本不存在的字」 | 繁體 **3 篇／10 個字**、簡體 10 篇／41 個字（逐字區內的中文註解依設計不轉換，另計）|
 | **詞邊界** | 台灣詞彙白名單有沒有切斷更長的詞 | 已知的 14 種切錯痕跡在 148 萬篇裡 **0 次**（13 次命中經查全是原文本來就這樣寫）|
-| **程式碼逐字比對** | 回頭掃 dump，每個區塊拿去輸出裡找 | 繁體 **94.201%**、簡體 **94.038%** 完全相符；只差空白約 0.9% |
-| **公式逐字比對** | 同上 | 繁體 **98.662%**、簡體 **98.670%** 完全相符；被改動約 0.42%、整條消失約 0.91% |
-| **表格內容比對** | 同上 | 繁體 **92.33% OK**、簡體 **93.67% OK**（各抽驗 600 篇）|
-| **omni 一致性** | `<image>` 個數 == `images` 長度 | **0 誤差**（每版 1,415,992 張圖）|
+| **程式碼逐字比對** | 回頭掃 dump，每個區塊拿去輸出裡找 | 繁體 **94.122%**、簡體 **93.961%** 完全相符；只差空白約 0.9% |
+| **公式逐字比對** | 同上 | 繁體 **98.661%**、簡體 **98.669%** 完全相符；被改動約 0.42%、整條消失約 0.92% |
+| **表格內容比對** | 同上 | 繁簡均 **93.33% OK**（各抽驗 600 篇；探針儲存格保留率 97.3%／97.1%）|
+| **omni 一致性** | `<image>` 個數 == `images` 長度 | **0 誤差**（每版 1,423,388 張圖）|
 | **圖片資料集** | 欄位、網址、殘留標記、空文字、重複與 JSON | **8 類缺陷全 0** |
 | **線上逐句對照** | 對照維基渲染結果（外部標準答案）| 覆蓋 88.5%、吻合 94.2%、每篇中位數 100% |
 | **資訊框標籤** | 欄位名是中文還是英文原鍵 | 英文原鍵 **75.4% → 16.4%**，值等於標題 3.0% → 0.07% |
@@ -649,7 +649,7 @@ API 按條目批次查再快取，代價小三個數量級。
 一條「獨佔一行的模板要夠長才算正文」的長度門檻把 25 字的引文整段刪掉
 （**那正是專案第一原則禁止的事，而它一直躺在自己的程式碼裡**）。
 
-**做得到與做不到**：15 類可程式判定的硬性缺陷已全量歸零；原文本身的畸形標記與
+**做得到與做不到**：16 類可程式判定的硬性缺陷已全量歸零；原文本身的畸形標記與
 長得像標記的真實內容則保留來源語意並列為品質警示。能做到的是**每一類問題都有
 結構性的處理與證據，而不是靠列名單或把可疑內容整段刪掉**。
 

@@ -25,6 +25,7 @@ import re
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import bz2
 from gensim.corpora.wikicorpus import extract_pages
@@ -137,10 +138,32 @@ def _load_progress(path, digest, valid_starts):
     return completed, store
 
 
-def fetch(need, out_dir, sleep=0.2, checkpoint_every=20):
+def _fetch_batch(i, chunk):
+    """查一個 API 批次；不修改共享狀態，讓多執行緒可安全並行。"""
+    errors = []
+    for attempt in range(4):
+        try:
+            data = _api({
+                'action': 'wbgetentities', 'sites': 'zhwiki',
+                'titles': '|'.join(chunk), 'props': 'claims',
+                'format': 'json', 'formatversion': 2,
+            })
+            return i, chunk, data, errors
+        except Exception as e:
+            errors.append(
+                f'批次 {i} 第 {attempt + 1}/4 次失敗: '
+                f'{type(e).__name__}: {e}')
+            if attempt < 3:
+                time.sleep(2 ** attempt)
+    return i, chunk, None, errors
+
+
+def fetch(need, out_dir, sleep=0.2, checkpoint_every=20, workers=1):
     """批次查 API，寫出 {條目標題: {屬性: 值}}"""
     if checkpoint_every <= 0:
         raise ValueError('checkpoint_every 必須是正整數')
+    if workers <= 0:
+        raise ValueError('workers 必須是正整數')
     os.makedirs(out_dir, exist_ok=True)
     titles = sorted(need)
     starts = list(range(0, len(titles), BATCH))
@@ -154,74 +177,64 @@ def fetch(need, out_dir, sleep=0.2, checkpoint_every=20):
     failed_batches = []
     newly_completed = 0
     try:
-        for i in tqdm(starts, desc='查 Wikidata'):
-            if i in completed:
-                continue
-            chunk = titles[i:i + BATCH]
-            data = None
-            for attempt in range(4):
-                try:
-                    data = _api({
-                        'action': 'wbgetentities', 'sites': 'zhwiki',
-                        'titles': '|'.join(chunk), 'props': 'claims',
-                        'format': 'json', 'formatversion': 2,
-                    })
-                    break
-                except Exception as e:
-                    print(f'  ⚠ 批次 {i} 第 {attempt + 1}/4 次失敗: '
-                          f'{type(e).__name__}: {e}')
-                    if attempt < 3:
-                        time.sleep(2 ** attempt)
-            if data is None:
-                failed_batches.append(chunk)
-                continue
-            entities = data.get('entities') or {}
-            # formatversion=2 用 list；舊格式用 dict。兩種都接。
-            items = (entities if isinstance(entities, list)
-                     else list(entities.values()))
-            if len(items) != len(chunk):
-                print(f'  ⚠ 批次 {i} 回傳 {len(items)} 筆，預期 {len(chunk)} 筆')
-                failed_batches.append(chunk)
-                continue
-            # API 依查詢順序回傳，逐一對應
-            for title, ent in zip(chunk, items, strict=True):
-                if not isinstance(ent, dict):
+        pending = [i for i in starts if i not in completed]
+        jobs = ((i, titles[i:i + BATCH]) for i in pending)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = executor.map(lambda job: _fetch_batch(*job), jobs)
+            results = tqdm(results, total=len(pending), desc='查 Wikidata')
+            for i, chunk, data, errors in results:
+                for error in errors:
+                    print(f'  ⚠ {error}')
+                if data is None:
+                    failed_batches.append(chunk)
                     continue
-                claims = ent.get('claims') or {}
-                values = {}
-                for prop in need[title]:
-                    candidates = sorted(
-                        claims.get(prop, []),
-                        key=lambda claim: {'preferred': 0, 'normal': 1,
-                                           'deprecated': 2}.get(
-                                               claim.get('rank'), 1),
-                    )
-                    for claim in candidates:
-                        if claim.get('rank') == 'deprecated':
-                            continue
-                        before = len(values)
-                        text = _plain(
-                            (claim.get('mainsnak') or {}).get('datavalue'))
-                        if text:
-                            values[prop] = text
-                        # 限定詞也要收。`{{wikidata|qualifier|P1082|P585}}`
-                        # 要的是 P1082 聲明上的 P585，不是 P1082 本身。
-                        for qprop, qsnaks in (
-                                claim.get('qualifiers') or {}).items():
-                            for qsnak in qsnaks[:1]:
-                                qtext = _plain(qsnak.get('datavalue'))
-                                if qtext:
-                                    values[f'{prop}/{qprop}'] = qtext
-                        if len(values) > before:
-                            break
-                if values:
-                    store[title] = values
-            completed.add(i)
-            newly_completed += 1
-            if newly_completed % checkpoint_every == 0:
-                _write_progress(
-                    progress_path, digest, completed, store)
-            time.sleep(sleep)
+                entities = data.get('entities') or {}
+                # formatversion=2 用 list；舊格式用 dict。兩種都接。
+                items = (entities if isinstance(entities, list)
+                         else list(entities.values()))
+                if len(items) != len(chunk):
+                    print(f'  ⚠ 批次 {i} 回傳 {len(items)} 筆，預期 {len(chunk)} 筆')
+                    failed_batches.append(chunk)
+                    continue
+                # API 依查詢順序回傳，逐一對應
+                for title, ent in zip(chunk, items, strict=True):
+                    if not isinstance(ent, dict):
+                        continue
+                    claims = ent.get('claims') or {}
+                    values = {}
+                    for prop in need[title]:
+                        candidates = sorted(
+                            claims.get(prop, []),
+                            key=lambda claim: {'preferred': 0, 'normal': 1,
+                                               'deprecated': 2}.get(
+                                                   claim.get('rank'), 1),
+                        )
+                        for claim in candidates:
+                            if claim.get('rank') == 'deprecated':
+                                continue
+                            before = len(values)
+                            text = _plain(
+                                (claim.get('mainsnak') or {}).get('datavalue'))
+                            if text:
+                                values[prop] = text
+                            # 限定詞也要收。`{{wikidata|qualifier|P1082|P585}}`
+                            # 要的是 P1082 聲明上的 P585，不是 P1082 本身。
+                            for qprop, qsnaks in (
+                                    claim.get('qualifiers') or {}).items():
+                                for qsnak in qsnaks[:1]:
+                                    qtext = _plain(qsnak.get('datavalue'))
+                                    if qtext:
+                                        values[f'{prop}/{qprop}'] = qtext
+                            if len(values) > before:
+                                break
+                    if values:
+                        store[title] = values
+                completed.add(i)
+                newly_completed += 1
+                if newly_completed % checkpoint_every == 0:
+                    _write_progress(
+                        progress_path, digest, completed, store)
+                time.sleep(sleep)
     except BaseException:
         _write_progress(progress_path, digest, completed, store)
         raise

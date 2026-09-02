@@ -177,6 +177,9 @@ _WHITESPACE_CHECKS = {'連續空行', '行尾空白'}
 
 # A. 硬性缺陷：出現即為 bug
 HARD = [
+    # `min_length=0` 代表不以長度篩選，不代表允許只剩標題的空殼。
+    # 這項由 main 直接檢查正文，正則刻意永不匹配。
+    ('空正文',                 re.compile(r'(?!)')),
     ('殘留模板 {{ }}',      re.compile(r'\{\{|\}\}')),
     # 表格語法一定在行首。不限行首會誤判程式碼：Ruby 的
     # `hash.delete_if {|k,value|` 是條目內容，不是殘留的表格。
@@ -282,6 +285,12 @@ def main():
                 n += 1
                 t = r['text']
                 lengths.append(len(t))
+
+                body = t.split('\n', 1)[1].strip() if '\n' in t else ''
+                if not body:
+                    hard['空正文'] += 1
+                    if len(hard_samples['空正文']) < 3:
+                        hard_samples['空正文'].append((r['title'], t[:80]))
 
                 has_tex, tex_unbal, tex_delim = math_defects(t)
                 if has_tex:

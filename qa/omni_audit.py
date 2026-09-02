@@ -15,9 +15,8 @@ import sys
 
 import pyarrow.parquet as pq
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUTPUT_ROOT = os.environ.get(
-    'OUTPUT_ROOT', os.path.join(REPO_ROOT, 'output'))
+    'OUTPUT_ROOT', os.path.abspath('output'))
 
 PLACEHOLDER = '<image>'
 

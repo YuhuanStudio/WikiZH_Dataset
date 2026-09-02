@@ -56,6 +56,39 @@ class InvariantExitSemanticsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn('有違反的阻斷性不變量', result.stdout)
 
+    def test_markdown_headings_inside_fence_are_not_document_structure(self):
+        result = self._run_rows([{
+            'title': 'Markdown 範例',
+            'text': (
+                'Markdown 範例\n\n## 語法\n\n```text\n'
+                '# H1-header\n## H2-header\n###### H6-header\n```'
+            ),
+        }])
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('全部阻斷性不變量成立', result.stdout)
+
+
+class ParityExitSemanticsTests(unittest.TestCase):
+    def test_region_variant_table_separator_is_advisory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for lang, text_value in (
+                    ('tw', '測試\n\n烘焙王9篇'),
+                    ('cn', '测试\n\n新鲜出炉｜9篇')):
+                out = os.path.join(directory, lang)
+                os.makedirs(out)
+                pq.write_table(pa.Table.from_pylist([{
+                    'id': '1', 'title': '測試', 'text': text_value,
+                }]), os.path.join(out, 'part.parquet'))
+
+            result = run_qa(
+                'parity.py', '1', '20260808', '--output-root', directory)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('表格欄分隔', result.stdout)
+        self.assertIn('地區譯文警示', result.stdout)
+        self.assertIn('核心結構完全對等', result.stdout)
+
 
 class ImageAuditExitSemanticsTests(unittest.TestCase):
     _BASE: ClassVar = {

@@ -159,6 +159,47 @@ CASES = [
      '* 成立：\n* 網站：www.example.gov',
      ['網站：www.example.gov'],
      ['- 成立：']),
+    # 台灣政治／北塔山事件：模板本身是標題，展開為空後 `=====` 被誤解析成
+    # 有內容的標題，最後產生 `## 6` 加一行孤立 `=`。
+    ('展開為空的模板標題不產生假章節',
+     '== 政黨 ==\n政黨沿革。\n==={{KMT}}===\n國民黨相關內容。',
+     ['## 政黨', '政黨沿革。', '國民黨相關內容。'],
+     ['## 2', '\n=\n']),
+    # 紐倫堡守則／絲攻和絲板：外部連結節只剩導航模板或分類名稱時應整節丟掉。
+    ('外部連結節的 namespace 殘骸不保留',
+     RAW_MARK + '這是一段足夠完整的正文內容，用來確認導航殘骸會被丟掉。\n\n'
+     '== 外部連結 ==\nTemplate:Research participant rights',
+     ['確認導航殘骸會被丟掉。'],
+     ['外部連結', 'Template:Research']),
+    ('混合外部連結節只移除 namespace 殘骸',
+     RAW_MARK + '這是一段足夠完整的正文內容。\n\n== 外部連接 ==\n'
+     '* Interactive animations on hypospadias, AboutKidsHealth.ca\n'
+     'Template:Male congenital anomalies of genital organs',
+     ['Interactive animations on hypospadias'],
+     ['Template:Male congenital']),
+    ('獨立 namespace 行不會流入正文',
+     '正文前段完整。\n\nTemplate:Jack\n\n正文後段也完整。',
+     ['正文前段完整。', '正文後段也完整。'],
+     ['Template:Jack']),
+    ('文件末尾沒有內容的引導語不保留',
+     RAW_MARK + '這是一段足夠完整的正文內容。\n\n包含各目如下：\n\n'
+     '=== 第一類 ===\n第一類內容如下：\n\n=== 第二類 ===\n第二類內容如下：',
+     ['這是一段足夠完整的正文內容。'],
+     ['包含各目如下：', '第一類', '第一類內容如下：', '第二類']),
+    # 潘宗光／南水水庫：圖片與註腳較晚才移除，之後才露出的空事實也要收掉。
+    ('圖片與註腳移除後的空事實不保留',
+     '* 獲獎：[[File:Award.jpg|獎章]]\n'
+     '* 備註：資料主要來源：<ref>來源</ref>\n'
+     '* 網站：www.example.gov',
+     ['網站：www.example.gov'],
+     ['- 獲獎：', '- 備註：']),
+    # 兒童賣淫：通用 Infobox 的版面鍵不是內容事實。
+    ('資訊框複合 style 鍵不輸出',
+     '{{Infobox\n| label2 = 範圍\n| data2 = 全球\n'
+     '| headerstyle = background-color:\n| labelstyle = width:\n}}\n'
+     '這是一段完整正文。',
+     ['範圍：全球', '這是一段完整正文。'],
+     ['headerstyle', 'labelstyle', 'background-color']),
     # 連鎖超市列表／鯉魚門：整份清單被壓成一行，因為行裡有全形逗號就放行不切
     ('壓平的清單會被切開',
      '* 沃爾瑪 好又多（Trust-mart）（後併入沃爾瑪） *家樂福 *大潤發 *物美商業 *超市發',

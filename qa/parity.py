@@ -23,15 +23,17 @@ import pyarrow.parquet as pq
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from qa.validate_full import _math_spans
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUTPUT_ROOT = os.environ.get(
-    'OUTPUT_ROOT', os.path.join(REPO_ROOT, 'output'))
+    'OUTPUT_ROOT', os.path.abspath('output'))
 
 _HEAD_RE = re.compile(r'(?m)^(#{2,6})[ \t]')
 _ITEM_RE = re.compile(r'(?m)^- ')
 _FENCE_RE = re.compile(r'(?s)```.*?```')
 _INLINE_CODE_RE = re.compile(r'`[^`\n]*`')
-_ADVISORY_KEYS = frozenset({'行數'})
+# 地區變體可以明確提供不同換行，甚至在表格中提供不同欄位文字；例如原始碼
+# `-{zh-tw:烘焙王9; zh-cn:新鲜出炉｜9;}-篇` 的簡體分支刻意多一個欄分隔。
+# 這兩項仍完整回報，但來源授權的地區譯文差異不阻擋出貨。
+_ADVISORY_KEYS = frozenset({'行數', '表格欄分隔'})
 
 
 def shape(text):

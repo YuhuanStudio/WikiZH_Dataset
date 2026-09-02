@@ -145,7 +145,9 @@ def main():
     counts = collections.Counter()
     samples = collections.defaultdict(list)
     for r in rows:
-        lines = r['text'].split('\n')
+        # Markdown 範例本身可以逐字包含 `# H1`、`###### H6`。結構檢查只看
+        # 圍欄外的標題；圍欄配對與公式檢查仍使用未挖空的原文。
+        lines = _FENCE_RE.sub('\nVERBATIM_BLOCK\n', r['text']).split('\n')
         for name, fn, _blocking in CHECKS:
             bad = fn(r['text'], lines)
             if bad:

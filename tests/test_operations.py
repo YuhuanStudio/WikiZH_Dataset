@@ -41,11 +41,11 @@ from wiki_text import (
 class OperationalSafetyTests(unittest.TestCase):
     def test_generated_dataset_cards_match_current_release_documentation(self):
         repos = (*PRETRAIN_REPOS.values(), *OMNI_REPOS.values(), IMAGE_REPO)
-        cards = {repo: dataset_card(repo, '2608', '20260801') for repo in repos}
+        cards = {repo: dataset_card(repo, '2609', '20260901') for repo in repos}
 
         for repo, card in cards.items():
             with self.subTest(repo=repo):
-                self.assertIn('2026/8/1', card)
+                self.assertIn('2026/9/1', card)
                 self.assertIn('huhu11256@gmail.com', card)
                 self.assertIn('91.5', card)
                 self.assertNotIn('91.1', card)
@@ -99,6 +99,29 @@ class OperationalSafetyTests(unittest.TestCase):
                         side_effect=ValueError('broken')):
             with self.assertRaisesRegex(RuntimeError, '處理條目 7 時出錯'):
                 process_page({'id': '7', 'text': '# 測試\n\n正文'}, lang='tw')
+
+    def test_title_only_page_is_not_a_dataset_record(self):
+        page = {'id': '7', 'text': '# 空殼'}
+        self.assertIsNone(process_page(page, lang='tw'))
+        variants = md_to_dataset.process_page_variants(page)
+        self.assertTrue(all(
+            record is None
+            for outputs in variants.values()
+            for record in outputs.values()
+        ))
+
+    def test_image_only_page_is_dropped_from_all_four_variants(self):
+        page = {
+            'id': '8',
+            'text': f'# 圖片空殼\n\n{IMAGE_MARK}0{IMAGE_MARK}',
+            'images': ['File:example.jpg|thumb|圖說'],
+        }
+        variants = md_to_dataset.process_page_variants(page)
+        self.assertTrue(all(
+            record is None
+            for outputs in variants.values()
+            for record in outputs.values()
+        ))
 
     def test_dataset_promotion_replaces_only_managed_shards(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -618,6 +641,34 @@ class OperationalSafetyTests(unittest.TestCase):
             self.assertEqual(result['Title050']['P1'], 'value-50')
             self.assertTrue(os.path.isfile(final))
             self.assertFalse(os.path.exists(progress))
+
+    def test_wikidata_fetch_supports_bounded_parallel_requests(self):
+        need = {f'Title{i:03d}': ['P1'] for i in range(51)}
+
+        def api(params):
+            return {'entities': [
+                {
+                    'claims': {
+                        'P1': [{
+                            'rank': 'normal',
+                            'mainsnak': {'datavalue': {
+                                'type': 'string', 'value': title,
+                            }},
+                        }],
+                    },
+                }
+                for title in params['titles'].split('|')
+            ]}
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(wikidata_store, '_api', side_effect=api), \
+                mock.patch.object(wikidata_store.time, 'sleep'):
+            result = wikidata_store.fetch(
+                need, directory, sleep=0, checkpoint_every=1, workers=2)
+
+        self.assertEqual(len(result), 51)
+        self.assertEqual(result['Title000']['P1'], 'Title000')
+        self.assertEqual(result['Title050']['P1'], 'Title050')
 
 
 if __name__ == '__main__':

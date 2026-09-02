@@ -7,9 +7,9 @@
 
 | 工具 | 用途 | 通過條件 |
 |---|---|---|
-| `cases.py` | 81 條行為黃金案例 | 全部通過 |
+| `cases.py` | 88 條行為黃金案例 | 全部通過 |
 | `stress.py` | 28 項正則與解析壓力案例 | 全部在時間預算內 |
-| `validate_full.py` | 全量正文格式、殘留與完整性 | 15 類硬性缺陷全為 0 |
+| `validate_full.py` | 全量正文格式、殘留與完整性 | 16 類硬性缺陷全為 0 |
 | `invariants.py` | 標題、程式碼圍欄、空章節等結構不變量 | 阻斷性缺陷為 0；來源公式警示不阻擋 |
 | `parity.py` | 繁簡 ID 與核心結構對等 | ID 序列一致、核心結構差異為 0 |
 | `omni_audit.py` | omni 圖片佔位符、圖片欄位與純文字版對照 | 所有不變量為 0 |
@@ -31,9 +31,9 @@
 cd scratchpad/rebuild-YYYYMMDD
 PYTHONPATH=../.. ../../.venv/bin/python ../../qa/validate_full.py output/tw tw
 PYTHONPATH=../.. ../../.venv/bin/python ../../qa/validate_full.py output/cn cn
-PYTHONPATH=../.. ../../.venv/bin/python ../../qa/parity.py 20000
-PYTHONPATH=../.. ../../.venv/bin/python ../../qa/omni_audit.py tw 0
-PYTHONPATH=../.. ../../.venv/bin/python ../../qa/omni_audit.py cn 0
+PYTHONPATH=../.. ../../.venv/bin/python ../../qa/parity.py 20000 --output-root output
+PYTHONPATH=../.. ../../.venv/bin/python ../../qa/omni_audit.py tw 0 --output-root output
+PYTHONPATH=../.. ../../.venv/bin/python ../../qa/omni_audit.py cn 0 --output-root output
 PYTHONPATH=../.. ../../.venv/bin/python ../../qa/image_audit.py output/tw/wiki_images_dataset.jsonl tw
 PYTHONPATH=../.. ../../.venv/bin/python ../../qa/image_audit.py output/cn/wiki_images_dataset_CN.jsonl cn
 ```
@@ -45,5 +45,5 @@ PYTHONPATH=../.. ../../.venv/bin/python ../../qa/image_audit.py output/cn/wiki_i
 - 一次性探針若證明了新缺陷，應把最小重現案例移進 `cases.py` 或 `tests/`；探針輸出本身不保留。
 - 文件中的發布數字以候選 manifest 與該輪 QA 日誌為準，不沿用前一輪 README 數字。
 
-目前公開的 `2608` 修正版以 `2026-08-01` dump 建置：正文與 omni 各 1,482,182 篇；
-圖片繁體 915,171 列、簡體 915,167 列。完整發布說明見上層 [README](../README.md)。
+目前候選 `2609` 版以 `2026-09-01` dump 建置：正文與 omni 各 1,485,232 篇；
+圖片繁體 920,971 列、簡體 920,967 列。完整發布說明見上層 [README](../README.md)。
